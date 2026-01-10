@@ -1,0 +1,20 @@
+# BabyJay Chatbot Dependencies
+# =============================
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# RAG Components
+chromadb>=0.4.18
+sentence-transformers>=2.2.2
+openai>=1.3.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Optional: for web scraping (not required for core functionality)
+# requests>=2.31.0
+# beautifulsoup4>=4.12.0supabase==2.4.0
+python-jose[cryptography]==3.3.0
