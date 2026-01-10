@@ -36,7 +36,8 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "https://babyjay.netlify.app",    # Production frontend
-    "https://*.netlify.app",          # Any Netlify preview
+    "https://*.netlify.app",
+    "https://baby-jay-frontend.vercel.app",          # Any Netlify preview
 ]
 
 app.add_middleware(
