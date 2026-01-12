@@ -21,4 +21,3 @@ pydantic==2.7.0
 chromadb==0.4.24
 rapidfuzz
 httpx==0.24.1
-httpx==0.24.1
