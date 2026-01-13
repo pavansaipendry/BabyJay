@@ -880,6 +880,7 @@ RULES:
             "who built you", "who developed you", "who designed you",
             "are you ai", "are you a bot", "are you human",
             "are you real", "are you chatgpt", "are you gpt",
+            "what is babyjay", "babyjay about", "about babyjay", 
         ])
 
     def _generate_about_response(self, query: str) -> str:
