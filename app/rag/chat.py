@@ -502,6 +502,22 @@ class BabyJayChat:
         working_query = query
         q = working_query.lower()
 
+        # General info questions should NOT trigger live lookup
+        general_info_patterns = [
+            "what is", "what's", "tell me about", "what do you know",
+            "describe", "explain", "information about", "details about",
+            "prerequisites", "prereqs", "credits", "description", "about"
+        ]
+        live_keywords = ["seats", "enroll", "open", "available", "who teaches", 
+                        "instructor", "schedule", "when does", "section"]
+
+        # If asking general info WITHOUT live keywords, skip live lookup
+        if any(p in q for p in general_info_patterns):
+            if not any(lk in q for lk in live_keywords):
+                if self.debug:
+                    print("[DEBUG] General info query, skipping live lookup")
+                return None
+
         # ==================== EARLY EXIT: Person/Faculty Queries ====================
         # "who is professor X?" should go to faculty retriever, not live lookup
         # "who teaches EECS 700?" should go to live lookup
@@ -996,10 +1012,12 @@ No bullet points. No emojis."""
         if q in ["it", "it?"] and self._conversation_history:
             return True
         simple_indicators = [
-        "his", "her", "their", "that", "this", "what about", "how about",
-        "its", "it's", "sorry", "my bad", "actually", "i meant", "i mean",
-        "no wait", "not that", "instead", "oops", "wait no", "correction"
-    ]
+            "his", "her", "their", "that", "this", "what about", "how about",
+            "its", "it's", "sorry", "my bad", "actually", "i meant", "i mean",
+            "no wait", "not that", "instead", "oops", "wait no", "correction",
+            "not the", "no not", "i meant", "that course", "this course",
+            "the course", "about it", "about that"
+        ]
         return any(ind in q for ind in simple_indicators)
 
     def _is_department_filter(self, question: str) -> bool:
