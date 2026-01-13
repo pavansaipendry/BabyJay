@@ -20,3 +20,4 @@ requests==2.32.0
 pydantic==2.7.0
 chromadb==0.4.24
 rapidfuzz
+beautifulsoup4==4.12.3
