@@ -991,7 +991,11 @@ No bullet points. No emojis."""
             return False
         if q in ["it", "it?"] and self._conversation_history:
             return True
-        simple_indicators = ["his", "her", "their", "that", "this", "what about", "how about"]
+        simple_indicators = [
+        "his", "her", "their", "that", "this", "what about", "how about",
+        "its", "it's", "sorry", "my bad", "actually", "i meant", "i mean",
+        "no wait", "not that", "instead", "oops", "wait no", "correction"
+    ]
         return any(ind in q for ind in simple_indicators)
 
     def _is_department_filter(self, question: str) -> bool:
