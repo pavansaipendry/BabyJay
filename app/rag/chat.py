@@ -22,6 +22,7 @@ from typing import Optional, List, Dict, Tuple
 
 from openai import OpenAI
 from app.rag.router import QueryRouter
+from app.rag.rlhf_optimizer import RLHFOptimizer
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -285,6 +286,7 @@ class BabyJayChat:
         self.original_ambiguous_query = None
         self.active_department_filter = None
         self.last_mentioned_course: Optional[str] = None
+        self.rlhf_optimizer = RLHFOptimizer(debug=debug)
 
         # Initialize intent detector
         self.intent_detector: Optional[LiveCourseIntentDetector] = None
@@ -1329,7 +1331,8 @@ No bullet points. No emojis."""
             self.recent_context = context
 
         # Build LLM messages
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        enhanced_prompt = self.rlhf_optimizer.enhance_prompt(SYSTEM_PROMPT, question)
+        messages = [{"role": "system", "content": enhanced_prompt}]
         if use_history and self._conversation_history:
             messages.extend(self._conversation_history[-10:])
 
