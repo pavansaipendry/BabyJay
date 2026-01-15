@@ -1232,6 +1232,19 @@ No bullet points. No emojis."""
         # Cleaning
         cleaned, was_cleaned, method = self._clean_query_hybrid(question)
         search_question = cleaned
+
+        try:
+            from app.rag.query_preprocessor import QueryPreprocessor
+            preprocessor = QueryPreprocessor()
+            prep_result = preprocessor.preprocess(search_question)
+            if prep_result.get("processed"):
+                search_question = prep_result["processed"]
+                if self.debug and prep_result.get("corrections"):
+                    print(f"[DEBUG] Expanded: {prep_result['corrections']}")
+        except Exception as e:
+            if self.debug:
+                print(f"[DEBUG] Preprocessor error: {e}")
+
         if self.debug and was_cleaned:
             print(f"[DEBUG] Cleaned ({method}): '{question}' → '{cleaned}'")
 
