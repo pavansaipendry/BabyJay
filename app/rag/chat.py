@@ -137,7 +137,7 @@ RESPONSE STYLE:
 - NEVER use bold (**text**) or headers
 - Write in natural flowing paragraphs like a friend texting
 - For multiple items, use prose: "You could check out X, Y, or Z" not "1. X 2. Y 3. Z"
-- Keep it brief - 2-4 sentences for simple questions, short paragraphs for complex ones
+- Keep it brief - 2-4 sentences for simple questions, short paragraphs and points for complex ones
 - Sound like a helpful person chatting, not a database outputting results
 - VARY your opening phrases - don't always start the same way
 
