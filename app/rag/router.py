@@ -4,7 +4,7 @@ Query Router for BabyJay
 Routes classified queries to the appropriate retriever.
 
 Flow:
-    User Query → Classifier → Router → Retriever → Results
+    User Query → Classifier → Router → Retriever → Re-rank → Context Build → Results
 
 Fast paths (JSON-based, ~1-50ms):
     - faculty_search → FacultyRetriever
@@ -26,18 +26,47 @@ from .classifier import QueryClassifier
 from .faculty_retriever import FacultyRetriever
 from .campus_retriever import CampusRetriever
 from .course_retriever import CourseRetriever
+from .context_builder import ContextBuilder
+from .query_decomposer import QueryDecomposer
+from .eecs_program_retriever import EECSProgramRetriever
+from .eecs_resources_retriever import EECSResourcesRetriever
+
+# Lazy import reranker to avoid slowing startup
+_reranker = None
+
+
+def _get_reranker():
+    global _reranker
+    if _reranker is None:
+        try:
+            from .reranker import Reranker
+            _reranker = Reranker()
+        except Exception:
+            _reranker = None
+    return _reranker
 
 
 class QueryRouter:
     """Routes queries to appropriate retrievers based on classification."""
-    
+
     def __init__(self):
         """Initialize router with classifier and retrievers."""
         self.classifier = QueryClassifier()
         self.faculty_retriever = FacultyRetriever()
         self.campus_retriever = CampusRetriever()
         self.course_retriever = CourseRetriever()
-        
+        self.context_builder = ContextBuilder()
+        self.decomposer = QueryDecomposer()
+        try:
+            self.eecs_program_retriever: Optional[EECSProgramRetriever] = EECSProgramRetriever()
+        except FileNotFoundError:
+            # Data file not yet scraped — degrade gracefully
+            self.eecs_program_retriever = None
+        try:
+            self.eecs_resources_retriever: Optional[EECSResourcesRetriever] = EECSResourcesRetriever()
+        except Exception:
+            self.eecs_resources_retriever = None
+
         # Fallback retriever (vector search) - imported lazily to avoid circular imports
         self._vector_retriever = None
     
@@ -60,22 +89,41 @@ class QueryRouter:
         Returns:
             Dictionary with results, context, source, and query_info
         """
-        # Step 0: Preprocess query (fix typos, expand synonyms)
-        from .query_preprocessor import QueryPreprocessor
-        preprocessor = QueryPreprocessor()
-        prep_result = preprocessor.preprocess(query)
-        processed_query = prep_result.get("processed", query) or query
+        # Step 0: Check if query needs decomposition (multi-part questions)
+        if self.decomposer.should_decompose(query):
+            sub_queries = self.decomposer.decompose(query)
+            if len(sub_queries) > 1:
+                sub_results = []
+                for sq in sub_queries:
+                    sr = self.route(sq, use_vector_fallback=use_vector_fallback)
+                    sub_results.append(sr)
+                return self.decomposer.merge_sub_results(sub_results)
 
-        # Step 1: Classify the query
-        classification = self.classifier.classify(processed_query)
+        # Step 1: Classify the query (preprocessing is handled by chat.py before routing)
+        classification = self.classifier.classify(query)
         intent = classification.get("intent", "general")
         entities = classification.get("entities", {})
         scope = classification.get("scope", "top_results")
         
         # Step 2: Route to appropriate retriever
+        if intent == "eecs_program_info":
+            return self._route_eecs_program(query, entities, scope, classification, use_vector_fallback)
+
+        if intent in (
+            "eecs_research_info",
+            "eecs_facility_info",
+            "eecs_student_org_info",
+            "eecs_grad_admissions_info",
+            "eecs_scholarship_info",
+            "eecs_career_info",
+            "eecs_leadership_info",
+            "eecs_advising_info",
+        ):
+            return self._route_eecs_resources(intent, query, classification, use_vector_fallback)
+
         if intent == "faculty_search":
             return self._route_faculty(query, entities, scope, classification, use_vector_fallback)
-        
+
         elif intent == "course_info":
             return self._route_courses(query, entities, scope, classification, use_vector_fallback)
         
@@ -116,7 +164,76 @@ class QueryRouter:
             "result_count": 0
         }
     
-    def _route_faculty(self, query: str, entities: Dict, scope: str, 
+    def _route_eecs_resources(self, intent: str, query: str,
+                              classification: Dict, use_vector_fallback: bool) -> Dict[str, Any]:
+        """Dispatch Phase 2 EECS scoped queries to the resources retriever."""
+        rr = self.eecs_resources_retriever
+        if rr is None:
+            if use_vector_fallback:
+                return self._route_vector_fallback(query, intent, classification)
+            return self._empty_result(classification)
+
+        results: List = []
+        context = ""
+        if intent == "eecs_research_info":
+            results = rr.search_research(query)
+            context = rr.format_research_context(results)
+        elif intent == "eecs_facility_info":
+            results = rr.search_facility(query)
+            context = rr.format_facility_context(results)
+        elif intent == "eecs_student_org_info":
+            results = rr.search_student_orgs(query)
+            context = rr.format_orgs_context(results)
+        elif intent == "eecs_grad_admissions_info":
+            results = rr.search_grad(query)
+            context = rr.format_grad_context(results)
+        elif intent == "eecs_scholarship_info":
+            results = rr.search_scholarships(query)
+            context = rr.format_scholarships_context(results)
+        elif intent == "eecs_career_info":
+            results = rr.search_career(query)
+            context = rr.format_career_context(results)
+        elif intent == "eecs_leadership_info":
+            results = rr.search_leadership(query)
+            context = rr.format_leadership_context(results)
+        elif intent == "eecs_advising_info":
+            results = rr.search_advising(query)
+            context = rr.format_advising_context(results)
+
+        if not context and use_vector_fallback:
+            return self._route_vector_fallback(query, intent, classification)
+
+        return {
+            "results": results,
+            "context": context,
+            "source": "eecs_resources_retriever",
+            "query_info": classification,
+            "result_count": len(results),
+        }
+
+    def _route_eecs_program(self, query: str, entities: Dict, scope: str,
+                            classification: Dict, use_vector_fallback: bool) -> Dict[str, Any]:
+        """Route EECS degree-program queries to the dedicated JSON retriever."""
+        if self.eecs_program_retriever is None:
+            # Data file missing — fall back to vector search
+            if use_vector_fallback:
+                return self._route_vector_fallback(query, "eecs_program_info", classification)
+            return self._empty_result(classification)
+
+        results = self.eecs_program_retriever.search(query, limit=5)
+        if not results and use_vector_fallback:
+            return self._route_vector_fallback(query, "eecs_program_info", classification)
+
+        context = self.eecs_program_retriever.format_for_context(results)
+        return {
+            "results": results,
+            "context": context,
+            "source": "eecs_program_retriever",
+            "query_info": classification,
+            "result_count": len(results),
+        }
+
+    def _route_faculty(self, query: str, entities: Dict, scope: str,
                        classification: Dict, use_vector_fallback: bool) -> Dict[str, Any]:
         """Route faculty search queries."""
         department = entities.get("department")
@@ -282,9 +399,9 @@ class QueryRouter:
             "result_count": len(results)
         }
     
-    def _route_vector_fallback(self, query: str, intent: str, 
+    def _route_vector_fallback(self, query: str, intent: str,
                                 classification: Dict) -> Dict[str, Any]:
-        """Fallback to vector search for queries without specialized retrievers."""
+        """Fallback to vector search with re-ranking for better precision."""
         intent_to_method = {
             "faculty_search": "faculty",
             "dining_info": "dining",
@@ -299,19 +416,35 @@ class QueryRouter:
             "safety_info": "campus_safety",
             "calendar_info": "calendar",
         }
-        
+
         results = self.vector_retriever.smart_search(query)
-        context = results.get("context", "")
-        
+
         result_key = intent_to_method.get(intent, "")
-        specific_results = results.get(result_key, [])
-        
+        specific_results = results.get(result_key) or []
+
+        # Re-rank vector results for better precision
+        reranker = _get_reranker()
+        if reranker and specific_results and len(specific_results) > 3:
+            specific_results = reranker.rerank(query, specific_results, top_k=5)
+
+        # Build compressed context with [Source: ...] citations via the shared
+        # ContextBuilder. Fall back to smart_search's pre-built text only if the
+        # builder produced nothing (e.g., no results under this intent).
+        builder_payload = {
+            "results": specific_results,
+            "source": "vector_retriever",
+            "query_info": classification,
+        }
+        context = self.context_builder.build(query, builder_payload)
+        if not context:
+            context = results.get("context", "")
+
         return {
             "results": specific_results,
             "context": context,
             "source": "vector_retriever",
             "query_info": classification,
-            "result_count": len(specific_results) if specific_results else 0
+            "result_count": len(specific_results)
         }
 
 

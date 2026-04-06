@@ -30,3 +30,12 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Bundled scraped data archive — not source
+data.zip
+
+# Personal Google session cookies — NEVER commit
+app/tools/YOUR_COOKIES_EXAMPLE.py
+
+# Local eval artifacts
+eval_results.json

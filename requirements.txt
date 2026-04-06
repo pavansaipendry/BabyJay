@@ -6,8 +6,11 @@ python-dotenv==1.0.1
 # Database
 supabase==2.0.0
 
-# OpenAI
+# OpenAI (still used for embeddings)
 openai==1.30.0
+
+# Anthropic (Claude Haiku for chat/generation)
+anthropic>=0.84.0
 
 # Auth
 python-jose[cryptography]==3.4.0

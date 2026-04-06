@@ -4,6 +4,7 @@ COMPREHENSIVE FIX: Handles complex queries, department+topic separation, smart e
 """
 
 import os
+import re
 from typing import List, Dict, Any, Optional, Tuple
 import chromadb
 from chromadb.utils import embedding_functions
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from .embeddings import EMBEDDING_MODEL, get_project_root
 from .faculty_search import FacultySearcher
+from .bm25_scorer import BM25Scorer, hybrid_merge
 
 
 class Retriever:
@@ -29,22 +31,72 @@ class Retriever:
             embedding_function=self.embedding_fn
         )
         self.faculty_searcher = FacultySearcher()
-    
-    def search(self, query: str, n_results: int = 5, source_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+
+        # BM25 index cache: source_filter -> BM25Scorer
+        self._bm25_cache: Dict[str, BM25Scorer] = {}
+
+    def _get_bm25_index(self, source_filter: Optional[str] = None) -> Optional[BM25Scorer]:
+        """Get or build a BM25 index for the given source filter."""
+        cache_key = source_filter or "__all__"
+        if cache_key in self._bm25_cache:
+            return self._bm25_cache[cache_key]
+
+        try:
+            where_filter = {"source": source_filter} if source_filter else None
+            # Pull all documents for this source to build BM25 index
+            all_docs = self.collection.get(
+                where=where_filter,
+                include=["documents", "metadatas"],
+                limit=500  # Cap to avoid memory issues
+            )
+            if not all_docs['documents']:
+                return None
+
+            docs = []
+            for i, doc in enumerate(all_docs['documents']):
+                docs.append({
+                    "content": doc,
+                    "metadata": all_docs['metadatas'][i] if all_docs['metadatas'] else {},
+                })
+
+            scorer = BM25Scorer()
+            scorer.index_documents(docs)
+            self._bm25_cache[cache_key] = scorer
+            return scorer
+        except Exception:
+            return None
+
+    def search(self, query: str, n_results: int = 5, source_filter: Optional[str] = None, min_relevance: float = 0.25) -> List[Dict[str, Any]]:
+        # Vector search (semantic)
         where_filter = {"source": source_filter} if source_filter else None
         results = self.collection.query(
             query_texts=[query], n_results=n_results, where=where_filter,
             include=["documents", "metadatas", "distances"]
         )
-        formatted = []
+        vector_results = []
         if results['documents'] and results['documents'][0]:
             for i, doc in enumerate(results['documents'][0]):
-                formatted.append({
+                score = 1 - results['distances'][0][i] if results['distances'] else 0
+                if score < min_relevance:
+                    continue
+                vector_results.append({
                     "content": doc,
                     "metadata": results['metadatas'][0][i] if results['metadatas'] else {},
-                    "relevance_score": 1 - results['distances'][0][i] if results['distances'] else 0
+                    "relevance_score": score
                 })
-        return formatted
+
+        # BM25 search (keyword) — complement vector search.
+        # Runs even when vector_results is empty, so a pure keyword hit can
+        # still surface docs that vector search filtered out by min_relevance.
+        bm25_index = self._get_bm25_index(source_filter)
+        if bm25_index:
+            bm25_results = bm25_index.search(query, top_k=n_results)
+            if bm25_results or vector_results:
+                # Merge using Reciprocal Rank Fusion
+                merged = hybrid_merge(vector_results, bm25_results, top_k=n_results)
+                return merged
+
+        return vector_results
     
     def search_dining(self, query: str, n_results: int = 3): return self.search(query, n_results, "dining")
     def search_courses(self, query: str, n_results: int = 5): return self.search(query, n_results, "course")
@@ -63,7 +115,11 @@ class Retriever:
         routes = self.search(query, n_results, "transit")
         stops = self.search(query, n_results, "transit_stop")
         all_results = routes + stops
-        all_results.sort(key=lambda x: x['relevance_score'], reverse=True)
+        # After hybrid merge some rows have hybrid_score but lack relevance_score,
+        # and BM25-only hits lack both. Use a safe fallback order.
+        def _score(r):
+            return r.get("hybrid_score", r.get("relevance_score", r.get("bm25_score", 0)))
+        all_results.sort(key=_score, reverse=True)
         return all_results[:n_results]
     
     def search_faculty_enhanced(self, query: str, n_results: int = 5, department: str = None):
@@ -156,21 +212,23 @@ class Retriever:
         for word in structure_words:
             topic = topic.replace(word, ' ')
         
-        # Step 3: Expand common abbreviations (CRITICAL!)
+        # Step 3: Expand common abbreviations using word-boundary regex
+        # (single pass — avoids overlap/double-expansion across iterations).
         expansions = {
-            ' ml ': ' machine learning ',
-            'ml ': 'machine learning ',  # Start of string
-            ' ml': ' machine learning',  # End of string
-            ' ai ': ' artificial intelligence ',
-            'ai ': 'artificial intelligence ',
-            ' ai': ' artificial intelligence',
-            ' dl ': ' deep learning ',
-            ' nlp ': ' natural language processing ',
-            ' cv ': ' computer vision ',
+            "ml": "machine learning",
+            "ai": "artificial intelligence",
+            "dl": "deep learning",
+            "nlp": "natural language processing",
+            "cv": "computer vision",
+            "hci": "human computer interaction",
         }
-        
-        for abbr, full in expansions.items():
-            topic = topic.replace(abbr, full)
+        def _expand(match: re.Match) -> str:
+            return expansions[match.group(0).lower()]
+        topic = re.sub(
+            r"\b(" + "|".join(re.escape(k) for k in expansions) + r")\b",
+            _expand,
+            topic,
+        )
         
         # Step 4: Clean up whitespace
         topic = ' '.join(topic.split())
@@ -336,7 +394,7 @@ class Retriever:
                 fallback_results = self.search_faculty_enhanced(research_topic, n_results, None)
                 seen = set()
                 deduped = []
-                for r in merged:
+                for r in fallback_results:
                     md = r.get("metadata", {}) or {}
                     name = md.get("name") or r.get("content", "")[:80]
                     if name in seen:

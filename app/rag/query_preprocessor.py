@@ -48,37 +48,22 @@ class QueryPreprocessor:
             "lec": "lecture",
             "rec": "recitation",
             
-            # Subject abbreviations (only expand if NOT a valid subject code)
+            # Subject abbreviations (only expand if NOT followed by a number)
             "ml": "machine learning",
             "ai": "artificial intelligence",
             "dl": "deep learning",
             "nlp": "natural language processing",
             "cv": "computer vision",
             "ds": "data science",
-            "cs": "computer science",
             "ee": "electrical engineering",
-            "ce": "civil engineering",
-            "me": "mechanical engineering",
-            "tic": "aerospace engineering",
-            "bio": "biology",
-            "chem": "chemistry",
-            "phys": "physics",
-            "psych": "psychology",
-            "econ": "economics",
             "poli sci": "political science",
             "polisci": "political science",
             "comm": "communication",
             "calc": "calculus",
             "stats": "statistics",
-            "stat": "statistics",
             "orgo": "organic chemistry",
             "ochem": "organic chemistry",
             "biochem": "biochemistry",
-            "tic": "aerospace",
-            
-            # Common student slang
-            "class": "course",
-            "classes": "courses",
         }
         
         # Words that should NOT be corrected (common valid words)

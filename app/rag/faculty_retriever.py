@@ -46,21 +46,27 @@ class FacultyRetriever:
             raise FileNotFoundError(f"Combined faculty file not found: {self.combined_file}")
     
     def _load_data(self):
-        """Load all faculty data from combined file (one-time)."""
+        """Load all faculty data from combined file (one-time).
+
+        Copies each faculty dict before annotating it with department metadata
+        so the original parsed JSON in self._data is not mutated — keeps the
+        source data reusable and avoids surprising aliasing bugs.
+        """
         if self._loaded:
             return
-        
+
         with open(self.combined_file, 'r', encoding='utf-8') as f:
             self._data = json.load(f)
-        
-        # Build flat list of all faculty with department info
+
+        # Build flat list of all faculty with department info (shallow copies)
         for dept_key, dept_data in self._data.items():
             faculty_list = dept_data.get("faculty", [])
             for fac in faculty_list:
-                fac["department"] = dept_data.get("name", dept_key)
-                fac["department_key"] = dept_key
-                self._all_faculty.append(fac)
-        
+                fac_copy = dict(fac)
+                fac_copy["department"] = dept_data.get("name", dept_key)
+                fac_copy["department_key"] = dept_key
+                self._all_faculty.append(fac_copy)
+
         self._loaded = True
     
     def get_all_departments(self) -> List[Dict]:
@@ -79,29 +85,27 @@ class FacultyRetriever:
     def get_department_faculty(self, dept_key: str, limit: int = None) -> List[Dict]:
         """
         Get all faculty in a department.
-        
+
         Args:
             dept_key: Department key (e.g., "eecs", "physics")
             limit: Optional limit on results
-            
+
         Returns:
-            List of faculty members with full details
+            List of faculty members with full details (copies — safe to mutate)
         """
         self._load_data()
-        
+
         dept_data = self._data.get(dept_key)
         if not dept_data:
             return []
-        
-        faculty = dept_data.get("faculty", [])
-        
-        # Ensure department info is set
-        for f in faculty:
-            if "department" not in f:
-                f["department"] = dept_data.get("name", dept_key)
-            if "department_key" not in f:
-                f["department_key"] = dept_key
-        
+
+        dept_name = dept_data.get("name", dept_key)
+        faculty = [
+            {**f, "department": f.get("department", dept_name),
+             "department_key": f.get("department_key", dept_key)}
+            for f in dept_data.get("faculty", [])
+        ]
+
         if limit:
             return faculty[:limit]
         return faculty
@@ -155,10 +159,128 @@ class FacultyRetriever:
         
         return deduped[:limit]
     
+    # Map research topics to their "home" departments for ranking.
+    # When a topic matches, professors from these departments appear first.
+    # Professors from other departments still appear — just ranked below.
+    TOPIC_DEPARTMENT_AFFINITY = {
+        # CS / Engineering topics → EECS first
+        "machine learning": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "ml": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "artificial intelligence": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "ai": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "deep learning": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "dl": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "natural language processing": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "nlp": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "computer vision": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "cv": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "robotics": {"eecs", "electrical_engineering_computer_science", "mechanical_engineering"},
+        "cybersecurity": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "data science": {"eecs", "electrical_engineering_computer_science", "computer_science", "math"},
+        "software engineering": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "algorithms": {"eecs", "electrical_engineering_computer_science", "computer_science", "math"},
+        "programming": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "hci": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "human computer interaction": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+        "networking": {"eecs", "electrical_engineering_computer_science"},
+        "database": {"eecs", "electrical_engineering_computer_science", "computer_science"},
+
+        # Physics / Astronomy topics → Physics first
+        "quantum": {"physics", "physics_astronomy"},
+        "quantum computing": {"physics", "physics_astronomy", "eecs"},
+        "particle physics": {"physics", "physics_astronomy"},
+        "astrophysics": {"physics", "physics_astronomy"},
+        "cosmology": {"physics", "physics_astronomy"},
+        "condensed matter": {"physics", "physics_astronomy"},
+        "optics": {"physics", "physics_astronomy"},
+        "thermodynamics": {"physics", "physics_astronomy", "mechanical_engineering"},
+
+        # Chemistry topics → Chemistry first
+        "organic chemistry": {"chemistry"},
+        "inorganic chemistry": {"chemistry"},
+        "biochemistry": {"chemistry", "molecular_biosciences"},
+        "computational chemistry": {"chemistry"},
+        "materials science": {"chemistry", "chemical_petroleum_engineering"},
+
+        # Biology topics → Biology first
+        "genetics": {"molecular_biosciences", "ecology_evolutionary_biology", "biology"},
+        "ecology": {"ecology_evolutionary_biology", "biology"},
+        "evolution": {"ecology_evolutionary_biology", "biology"},
+        "molecular biology": {"molecular_biosciences", "biology"},
+        "neuroscience": {"molecular_biosciences", "psychology", "biology"},
+        "microbiology": {"molecular_biosciences", "biology"},
+        "bioinformatics": {"molecular_biosciences", "eecs", "biology"},
+
+        # Math / Stats topics → Math first
+        "statistics": {"math", "mathematics"},
+        "probability": {"math", "mathematics"},
+        "calculus": {"math", "mathematics"},
+        "algebra": {"math", "mathematics"},
+        "topology": {"math", "mathematics"},
+        "number theory": {"math", "mathematics"},
+
+        # Engineering topics → Respective departments
+        "aerospace": {"aerospace_engineering"},
+        "aerodynamics": {"aerospace_engineering"},
+        "structural engineering": {"civil_environmental_architectural_engineering"},
+        "environmental engineering": {"civil_environmental_architectural_engineering"},
+        "biomedical engineering": {"bioengineering"},
+        "chemical engineering": {"chemical_petroleum_engineering"},
+        "petroleum engineering": {"chemical_petroleum_engineering"},
+        "mechanical": {"mechanical_engineering"},
+        "fluid dynamics": {"mechanical_engineering", "aerospace_engineering"},
+
+        # Business topics → Business first
+        "finance": {"business", "school_of_business"},
+        "marketing": {"business", "school_of_business"},
+        "accounting": {"business", "school_of_business"},
+        "management": {"business", "school_of_business"},
+        "supply chain": {"business", "school_of_business"},
+        "entrepreneurship": {"business", "school_of_business"},
+        "analytics": {"business", "school_of_business", "eecs"},
+
+        # Psychology topics → Psychology first
+        "clinical psychology": {"psychology"},
+        "cognitive": {"psychology"},
+        "behavioral": {"psychology"},
+        "developmental psychology": {"psychology"},
+        "social psychology": {"psychology"},
+
+        # Law topics → Law first
+        "constitutional law": {"law"},
+        "criminal law": {"law"},
+        "international law": {"law"},
+        "intellectual property": {"law"},
+
+        # Humanities / Social Sciences
+        "political science": {"political_science"},
+        "economics": {"economics"},
+        "sociology": {"sociology"},
+        "anthropology": {"anthropology"},
+        "philosophy": {"philosophy"},
+        "linguistics": {"linguistics"},
+        "history": {"history"},
+        "literature": {"english"},
+        "journalism": {"journalism"},
+        "education": {"education_human_sciences"},
+        "music": {"music"},
+        "architecture": {"architecture"},
+        "pharmacy": {"pharmacy"},
+        "nursing": {"nursing"},
+        "social work": {"social_welfare"},
+
+        # Health / Medical topics
+        "public health": {"public_health", "nursing"},
+        "epidemiology": {"public_health"},
+        "pharmacology": {"pharmacy", "pharmacology_toxicology"},
+        "physical therapy": {"physical_therapy"},
+        "occupational therapy": {"occupational_therapy"},
+    }
+
     def _filter_by_research(self, faculty: List[Dict], research_area: str) -> List[Dict]:
-        """Filter faculty by research area."""
+        """Filter faculty by research area, ranked by department affinity."""
         research_lower = research_area.lower()
-        
+
         # Expand common abbreviations
         expansions = {
             "ml": "machine learning",
@@ -168,7 +290,7 @@ class FacultyRetriever:
             "cv": "computer vision",
             "hci": "human computer interaction",
         }
-        
+
         # Build search terms
         search_terms = [research_lower]
         for abbr, full in expansions.items():
@@ -176,8 +298,16 @@ class FacultyRetriever:
                 search_terms.append(full)
             elif research_lower == full:
                 search_terms.append(abbr)
-        
-        matches = []
+
+        # Determine which departments should be boosted for this topic
+        preferred_depts = set()
+        for term in search_terms:
+            if term in self.TOPIC_DEPARTMENT_AFFINITY:
+                preferred_depts.update(self.TOPIC_DEPARTMENT_AFFINITY[term])
+
+        primary_matches = []    # From preferred departments
+        secondary_matches = []  # From other departments
+
         for f in faculty:
             # Get searchable text
             research_interests = f.get("research_interests", [])
@@ -185,19 +315,28 @@ class FacultyRetriever:
                 research_text = " ".join(research_interests).lower()
             else:
                 research_text = str(research_interests).lower()
-            
+
             bio = f.get("biography", "").lower()
             title = f.get("title", "").lower()
-            
+
             searchable = f"{research_text} {bio} {title}"
-            
+
             # Check if any search term matches
+            matched = False
             for term in search_terms:
                 if term in searchable:
-                    matches.append(f)
+                    matched = True
                     break
-        
-        return matches
+
+            if matched:
+                dept_key = f.get("department_key", "").lower()
+                if preferred_depts and dept_key in preferred_depts:
+                    primary_matches.append(f)
+                else:
+                    secondary_matches.append(f)
+
+        # Return preferred department matches first, then others
+        return primary_matches + secondary_matches
     
     def search_by_name(self, name: str, limit: int = 5) -> List[Dict]:
         """

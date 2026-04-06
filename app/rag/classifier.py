@@ -12,14 +12,14 @@ import os
 import re
 import json
 from typing import Dict, Any, Optional, List
-from openai import OpenAI
+import anthropic
 
 
 class QueryClassifier:
     """Classifies queries to determine intent and extract entities."""
-    
+
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         
         # Common subject codes at KU (for course detection)
         self.subject_codes = {
@@ -83,6 +83,104 @@ class QueryClassifier:
         
         # Intent patterns - ORDER MATTERS (more specific patterns first)
         self.intent_patterns = {
+            # Highest priority — specific EECS degree-program questions.
+            # These patterns require BOTH a degree / program word AND an EECS
+            # subject marker so we don't steal dining or housing queries.
+            # Phase 3 — leadership + advising must come FIRST so they beat
+            # more generic patterns.
+            "eecs_leadership_info": [
+                r"\b(chair|chairperson)\s+of\s+(?:the\s+)?eecs\b",
+                r"\beecs\s+(?:department\s+)?chair\b",
+                r"\bwho(?:'s|\s+is)\s+(?:the\s+)?(?:eecs\s+)?chair\b",
+                r"\bassociate\s+chair\b",
+                r"\beecs\s+(?:department\s+)?(?:leadership|head|director)\b",
+                r"\bwho\s+(?:runs|leads|directs|heads|is\s+in\s+charge\s+of)\s+(?:eecs|i2s|ittc|cresis|the\s+institute)\b",
+                r"\bwho\s+(?:runs|leads|directs|heads)\s+(?:the\s+)?(?:department|institute|center)\b",
+                r"\b(graduate|undergrad(?:uate)?)\s+(?:studies\s+)?director\b",
+                r"\b(i2s|ittc|cresis)\s+director\b",
+                r"\bdirector\s+of\s+(?:the\s+)?(?:i2s|ittc|cresis|institute|center)\b",
+            ],
+            "eecs_advising_info": [
+                r"\beecs\s+advis(?:or|ing|ers?)\b",
+                r"\badvis(?:or|ing|ers?)\b.*\beecs\b",
+                r"\b(book|schedule|make)\s+an?\s+advising\b",
+                r"\b(who\s+advises|undergrad(?:uate)?\s+advisor)\b",
+                r"\beecs\s+(?:department\s+)?office\b",
+                r"\bcontact\s+eecs\b",
+                r"\beecs\s+(?:main\s+)?contact\b",
+            ],
+            # Phase 2 — EECS scoped intents. Ordering matters: more specific
+            # location/facility patterns come BEFORE the broad research
+            # patterns so "labs in Eaton Hall" routes to facility_info.
+            "eecs_facility_info": [
+                r"\b(eaton\s+hall|nichols\s+hall)\b",
+                r"\b(computing\s+commons|eecs\s+shop|eecs\s+(?:hardware\s+)?labs?)\b",
+                r"\b(where\s+is\s+eecs|eecs\s+building|eecs\s+location)\b",
+                # "labs in Eaton" / "labs inside Nichols" etc.
+                r"\blabs?\b.*\b(eaton|nichols)\b",
+            ],
+            "eecs_research_info": [
+                r"\b(ittc|i2s|cresis)\b",
+                r"\b(research\s+cluster|research\s+group|research\s+area|research\s+center|research\s+facilit)",
+                r"\beecs\b.*\bresearch\b",
+                r"\bresearch\b.*\beecs\b",
+                # Cluster name mentions — include "cybersecurity" so standalone
+                # "cybersecurity research at KU" routes here.
+                r"\b(applied\s+electromagnetics|communication\s+systems|computational\s+science|computer\s+systems\s+design|computing\s+in\s+the\s+biosciences|cybersecurity|language\s+and\s+semantics|radar\s+systems|remote\s+sensing|rf\s+systems|signal\s+processing|theory\s+of\s+computing)\b.*\bresearch\b",
+                r"\bresearch\b.*\b(cybersecurity|radar|signal\s+processing|rf|electromagnetics|bioscience)\b",
+            ],
+            "eecs_student_org_info": [
+                r"\b(ku\s+acm|acm\s+chapter|acm\s+at\s+ku|kuacm)\b",
+                r"\b(hackku|hack\s+ku|ku\s+hackathon|hackathon)\b",
+                r"\b(ieee\s+(?:ku|at\s+ku|chapter|student))\b",
+                r"\b(hkn|eta\s+kappa\s+nu)\b",
+                r"\b(ku\s+wic|women\s+in\s+computing|kuwic)\b",
+                r"\b(upsilon\s+pi\s+epsilon|upe)\b",
+                r"\b(jayhackers|information\s+security\s+club)\b",
+                r"\b(eecs\s+(?:student\s+)?(?:club|organization|org|tutoring))\b",
+                # "tutoring for EECS 168" — tutoring at KU is run by KU ACM,
+                # so route tutoring to orgs. Match even when a course code
+                # appears (so it beats course_info's +3).
+                r"\btutoring\b",
+                r"\b(peer\s+help|help\s+with\s+(?:eecs|cs))\b",
+            ],
+            "eecs_grad_admissions_info": [
+                r"\beecs\b.*\b(grad|graduate|phd|ph\.d\.|masters?|m\.s|admission|deadline|apply)\b",
+                r"\b(grad|graduate|phd|ph\.d\.|masters?|m\.s)\b.*\beecs\b",
+                r"\b(grad(?:uate)?\s+(?:funding|assistantship|gta|gra|fellowship|stipend))\b",
+                r"\b(deficiency\s+courses?)\b",
+                r"\b(special\s+graduate\s+admissions?)\b",
+                r"\b(accelerated\s+(?:bs[/\s]*ms|masters|4\s*\+\s*1))\b",
+                r"\b(graduate\s+application\s+deadline|grad\s+app\s+deadline)\b",
+            ],
+            "eecs_scholarship_info": [
+                r"\b(eecs|engineering)\s+scholarships?\b",
+                r"\b(garmin|summerfield|watkins[-\s]?berger|jayhawk\s+sfs|cybercorps|ukash)\b",
+                r"\bscholarships?\b.*\b(eecs|cs|compe|engineering|computer\s+science|computer\s+engineering|electrical\s+engineering|cyber)\b",
+                r"\b(eecs|cs|compe|computer\s+science|computer\s+engineering|electrical\s+engineering)\b.*\bscholarships?\b",
+            ],
+            "eecs_career_info": [
+                r"\b(engineering\s+career\s+center|ecc)\b",
+                r"\b(career\s+fair)\b.*\b(engineering|eecs|ku)\b",
+                r"\b(internship|co[-\s]?op)\b.*\b(eecs|cs|engineering)\b",
+                r"\b(companies\s+recruit)\b.*\b(ku|eecs)\b",
+                r"\bhandshake\b",
+            ],
+            "eecs_program_info": [
+                # "BS CS requirements", "bachelor of computer science"
+                r"\b(bs|b\.s\.|bachelor|masters?|m\.s\.|ms|phd|ph\.d\.|doctorate|doctoral|m\.eng|meng)\b.*\b(computer\s+science|computer\s+engineering|electrical\s+engineering|cybersecurity(?:\s+engineering)?|applied\s+computing|cs|compe|ee|eecs)\b",
+                r"\b(computer\s+science|computer\s+engineering|electrical\s+engineering|cybersecurity(?:\s+engineering)?|applied\s+computing|eecs)\b.*\b(degree|program|requirements?|curriculum|plan|credit\s+hours?|prereq|core|electives?|major|minor)\b",
+                # Reverse order — "credit hours for BS CS", "requirements for EECS BS"
+                r"\b(credit\s+hours?|total\s+hours?|degree|program|requirements?|curriculum|plan|major)\b.*\b(eecs|bs|ms|phd|bachelor|master|doctor|cs|compe|ee|computer\s+science|computer\s+engineering|electrical\s+engineering|cybersecurity|applied\s+computing)\b",
+                r"\b(4[-\s]?year\s+plan|four[-\s]?year\s+plan|degree\s+plan|course\s+sequence|core\s+courses)\b.*\b(cs|compe|ee|eecs|computer|electrical|cyber)\b",
+                r"\b(learning\s+outcomes)\b.*\b(cs|compe|ee|eecs|computer|electrical|cyber)\b",
+                r"\b(accelerated\s+(?:bs[/\s]*ms|masters|4\+1))\b",
+                # "cybersecurity certificate" / "data science graduate certificate" / "cybersecurity cert"
+                r"\b(cybersecurity|data\s+science|rf\s+systems?)\s+(?:undergraduate\s+|ug\s+|graduate\s+|grad\s+)?cert(?:ificate)?\b",
+                r"\b(undergraduate\s+certificate|ug\s+certificate|graduate\s+certificate|grad\s+certificate)\s+in\s+(cybersecurity|data\s+science|rf)",
+                # direct "BS CS" / "MS CS" / "PhD CS" shorthand
+                r"\b(bs|ms|phd|meng)\s+(cs|compe|ee|eecs|computer\s+science|electrical\s+engineering)\b",
+            ],
             "housing_info": [
                 r"\b(housing|dorm|dormitory|residence hall|apartment|living|roommate)\b",
                 r"\b(scholarship hall|scholarship halls)\b",
@@ -92,7 +190,9 @@ class QueryClassifier:
             "faculty_search": [
                 r"\b(professor|professors|faculty|researcher|researchers|instructor|instructors|teacher|teachers)\b",
                 r"\b(who teaches|who does research|expert in|specialist in)\b",
-                r"\b(research in|working on|studies|studying)\b.*\b(professor|faculty)?\b",
+                # Require an actual faculty noun later in the sentence — avoids
+                # scoring "research in quantum" as a faculty query.
+                r"\b(research(?:ing)?\s+(?:in|on)|working\s+on|studies|studying)\b.*\b(professor|professors|faculty|researcher|researchers)\b",
             ],
             "course_info": [
                 # Course code patterns (EECS 168, AE 345, etc.)
@@ -103,9 +203,10 @@ class QueryClassifier:
                 r"\b(credit|credits|credit hour|credit hours)\b",
                 r"\b(enroll|enrollment|register|registration)\b",
                 r"\b(syllabus|curriculum)\b",
-                r"\b(learning|programming|calculus|physics|chemistry|biology|engineering)\b",
-                r"\b(learning|programming|calculus|physics|chemistry|biology|engineering)\b",
-                r"\b(learning|programming|calculus|physics|chemistry|biology|engineering)\b",
+                # Only count raw field names as course signals when they appear
+                # next to a course-y noun — otherwise "physics professor" scores
+                # course_info as well as faculty_search.
+                r"\b(calculus|physics|chemistry|biology|engineering)\s+(course|courses|class|classes|major|department|prereq)",
                 # Level + course indicators
                 r"\b(undergraduate|graduate|grad|undergrad)\s+(course|courses|class|classes|level)\b",
                 # Question patterns
@@ -176,8 +277,15 @@ class QueryClassifier:
         if intent_confidence < 0.7 and use_llm_fallback:
             llm_result = self._classify_with_llm(query)
             if llm_result and llm_result.get("confidence", 0) > intent_confidence:
+                # Guard: don't trust an LLM faculty_search classification unless
+                # the original query actually contains a faculty cue. Prevents
+                # bare department names like "history of KU" or "physics" from
+                # dumping the entire department roster at the user.
+                if llm_result.get("intent") == "faculty_search" and not self._has_faculty_cue(query_lower):
+                    llm_result["intent"] = "general"
+                    llm_result["entities"] = {}
                 return llm_result
-        
+
         return {
             "intent": intent,
             "entities": entities,
@@ -186,11 +294,36 @@ class QueryClassifier:
             "method": "regex",
             "original_query": query
         }
+
+    # Compiled once — any of these tokens in the query is a lexical "faculty cue"
+    _FACULTY_CUE_RE = re.compile(
+        r"\b(professor|professors|prof|profs|faculty|researcher|researchers|"
+        r"instructor|instructors|teacher|teachers|advisor|advisors|dean|deans|"
+        r"who\s+teaches|who\s+does\s+research|expert\s+in|specialist\s+in|dr\.?)\b",
+        re.IGNORECASE,
+    )
+
+    def _has_faculty_cue(self, query_lower: str) -> bool:
+        return bool(self._FACULTY_CUE_RE.search(query_lower))
     
     def _detect_intent_regex(self, query_lower: str, query_original: str) -> tuple:
         """Detect intent using regex patterns. Returns (intent, confidence)."""
         scores = {}
-        
+
+        # Hard overrides — these semantics are unambiguous enough to skip
+        # the scoring contest entirely.
+        if re.search(r"\btutoring\b", query_lower) and re.search(
+            r"\b(eecs|cs|course|class|\d{3,4})\b", query_lower
+        ):
+            return ("eecs_student_org_info", 0.9)
+        if re.search(r"\b(cs|computer\s+science)\s+minor\b", query_lower) or \
+           re.search(r"\bminor\s+in\s+(?:cs|computer\s+science)\b", query_lower):
+            return ("eecs_program_info", 0.9)
+        if re.search(r"\b(cs|eecs|computer\s+science|computer\s+engineering|electrical\s+engineering)\s+(?:phd|ph\.d|doctoral|doctorate|masters?)\b", query_lower):
+            return ("eecs_grad_admissions_info", 0.9)
+        if re.search(r"\b(phd|ph\.d|doctoral|doctorate|masters?|m\.s)\s+in\s+(?:cs|eecs|computer\s+science|computer\s+engineering|electrical\s+engineering)\b", query_lower):
+            return ("eecs_grad_admissions_info", 0.9)
+
         # Check for course codes first (high priority)
         if re.search(r"\b[A-Z]{2,4}\s*\d{3,4}\b", query_original):
             scores["course_info"] = 3  # High score for explicit course code
@@ -240,13 +373,17 @@ class QueryClassifier:
             if "research_area" in entities:
                 break
         
-        # Extract potential name
+        # Extract potential name. Require a Dr/Prof prefix OR a clear possessive
+        # ("Jane Doe's office") — otherwise "Rock Chalk office" got extracted as
+        # a fake name and broke name-based faculty lookups.
         name_patterns = [
+            # "Dr. Jane" / "Professor Jane Doe" — prefix is mandatory
             r"(?:dr\.?|professor|prof\.?)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-            r"([A-Z][a-z]+\s+[A-Z][a-z]+)(?:'s)?\s+(?:office|email|research|class)",
+            # "Jane Doe's office" — must have the 's possessive
+            r"([A-Z][a-z]+\s+[A-Z][a-z]+)'s\s+(?:office|email|research|class|phone|number)",
         ]
         for pattern in name_patterns:
-            match = re.search(pattern, query, re.IGNORECASE)
+            match = re.search(pattern, query)  # case-sensitive on purpose
             if match:
                 entities["name"] = match.group(1).strip()
                 break
@@ -297,12 +434,7 @@ class QueryClassifier:
     def _classify_with_llm(self, query: str) -> Optional[Dict[str, Any]]:
         """Use LLM for complex/ambiguous query classification."""
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """Classify the user query for a university chatbot. Return JSON only.
+            classify_system = """Classify the user query for a university chatbot. Return JSON only.
 
 Intents: faculty_search, dining_info, housing_info, transit_info, course_info, building_info, admission_info, financial_info, library_info, recreation_info, safety_info, calendar_info, general
 
@@ -319,27 +451,26 @@ For course_info, extract:
 
 Return format:
 {"intent": "...", "entities": {...}, "scope": "top_results|complete_list", "confidence": 0.0-1.0}"""
-                    },
-                    {
-                        "role": "user",
-                        "content": query
-                    }
-                ],
+
+            response = self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                system=classify_system,
+                messages=[{"role": "user", "content": query}],
                 temperature=0,
-                max_tokens=200
+                max_tokens=200,
             )
-            
-            result_text = response.choices[0].message.content.strip()
-            
+
+            result_text = response.content[0].text.strip()
+
             if result_text.startswith("```"):
                 result_text = re.sub(r"```json?\n?", "", result_text)
                 result_text = result_text.rstrip("`")
-            
+
             result = json.loads(result_text)
             result["method"] = "llm"
             result["original_query"] = query
             return result
-            
+
         except Exception as e:
             return None
     
