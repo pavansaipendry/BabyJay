@@ -4,7 +4,10 @@ uvicorn[standard]==0.30.0
 python-dotenv==1.0.1
 
 # Database
-supabase==2.0.0
+# NOTE: supabase<2.3 pins httpx<0.25 which conflicts with anthropic>=0.84
+# (which requires httpx>=0.25). 2.9.1 is the sweet spot: uses httpx>=0.26
+# and has no breaking changes in the client API we use (auth + from_).
+supabase==2.9.1
 
 # OpenAI (still used for embeddings)
 openai==1.30.0
