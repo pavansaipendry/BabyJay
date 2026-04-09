@@ -257,6 +257,7 @@ class ContextBuilder:
                 lines.append(f"Hours: {'; '.join(hours_parts[:3])}")
             else:
                 lines.append(f"Hours: {hours}")
+        lines.append("Source URL: https://dining.ku.edu")
         return "\n".join(lines)
 
     def _format_transit(self, r: Dict, fields: set, source: str) -> str:
@@ -266,6 +267,7 @@ class ContextBuilder:
             lines.append(f"Number: {r['route_number']}")
         if r.get("description"):
             lines.append(f"Info: {r['description'][:150]}")
+        lines.append("Source URL: https://lawrenceks.org/transit/")
         return "\n".join(lines)
 
     def _format_housing(self, r: Dict, fields: set, source: str) -> str:
@@ -275,6 +277,7 @@ class ContextBuilder:
             lines.append(f"Type: {r['type']}")
         if r.get("description"):
             lines.append(f"Info: {r['description'][:200]}")
+        lines.append("Source URL: https://housing.ku.edu")
         return "\n".join(lines)
 
     def _format_eecs_program(self, p: Dict, source: str) -> str:
