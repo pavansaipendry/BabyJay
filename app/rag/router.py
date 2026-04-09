@@ -139,8 +139,17 @@ class QueryRouter:
         elif intent == "financial_info":
             return self._route_tuition(query, entities, scope, classification)
         
-        elif intent in ["admission_info", "library_info", "recreation_info", 
-                        "safety_info", "calendar_info", "building_info"]:
+        elif intent == "building_info":
+            # Try direct offices.json lookup first, fall back to vector
+            office_result = self._route_offices(query, classification)
+            if office_result.get("context"):
+                return office_result
+            if use_vector_fallback:
+                return self._route_vector_fallback(query, intent, classification)
+            return self._empty_result(classification)
+
+        elif intent in ["admission_info", "library_info", "recreation_info",
+                        "safety_info", "calendar_info"]:
             # These don't have specialized retrievers yet - use vector search
             if use_vector_fallback:
                 return self._route_vector_fallback(query, intent, classification)
@@ -154,6 +163,60 @@ class QueryRouter:
             else:
                 return self._empty_result(classification)
     
+    def _route_offices(self, query: str, classification: Dict) -> Dict[str, Any]:
+        """Direct JSON lookup against offices.json — no ChromaDB needed."""
+        import json
+        data_path = Path(__file__).resolve().parent.parent.parent / "data" / "offices" / "offices.json"
+        if not data_path.exists():
+            return self._empty_result(classification)
+        try:
+            raw = json.loads(data_path.read_text())
+            offices = raw if isinstance(raw, list) else raw.get("offices", [])
+        except Exception:
+            return self._empty_result(classification)
+
+        q = query.lower()
+        matches = []
+        for o in offices:
+            name = o.get("name", "").lower()
+            desc = o.get("description", "").lower()
+            services = " ".join(o.get("services", [])).lower()
+            if any(word in name or word in desc or word in services
+                   for word in q.split() if len(word) > 2):
+                matches.append(o)
+
+        if not matches:
+            return self._empty_result(classification)
+
+        blocks = []
+        for o in matches[:3]:
+            lines = ["[Source: offices_retriever]",
+                     f"Office: {o.get('name', '?')}"]
+            if o.get("building"):
+                lines.append(f"Building: {o['building']}" + (f", Room {o['room']}" if o.get("room") else ""))
+            if o.get("address"):
+                lines.append(f"Address: {o['address']}")
+            if o.get("phone"):
+                lines.append(f"Phone: {o['phone']}")
+            if o.get("email"):
+                lines.append(f"Email: {o['email']}")
+            if o.get("hours"):
+                lines.append(f"Hours: {o['hours']}")
+            if o.get("website"):
+                lines.append(f"Source URL: {o['website']}")
+            if o.get("services"):
+                lines.append(f"Services: {', '.join(o['services'][:5])}")
+            blocks.append("\n".join(lines))
+
+        context = "\n\n".join(blocks)
+        return {
+            "results": matches[:3],
+            "context": context,
+            "source": "offices_retriever",
+            "query_info": classification,
+            "result_count": len(matches)
+        }
+
     def _empty_result(self, classification: Dict) -> Dict[str, Any]:
         """Return empty result when no retriever is available."""
         return {

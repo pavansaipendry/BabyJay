@@ -34,8 +34,7 @@ class ContextBuilder:
         query_info = route_result.get("query_info", {})
         intent = query_info.get("intent", "general")
 
-        # Phase 2 EECS scoped intents already produce their own [Source:…]-
-        # tagged context in the retriever. Pass it through unchanged.
+        # Retrievers that pre-build rich context — pass through unchanged.
         if intent in (
             "eecs_research_info",
             "eecs_facility_info",
@@ -45,7 +44,7 @@ class ContextBuilder:
             "eecs_career_info",
             "eecs_leadership_info",
             "eecs_advising_info",
-        ):
+        ) or source == "offices_retriever":
             return route_result.get("context", "")
 
         if not results:
