@@ -139,7 +139,7 @@ Sources:
     - If no https:// URL appears in the context, skip the Sources section entirely — do not write "Sources:" at all.
 
 RESPONSE STYLE:
-- NEVER use ** or __ for bold. Never use markdown bold/italic.
+- You MAY use **bold** for professor names, course codes, key terms — use sparingly, only when it genuinely helps clarity.
 - NEVER use # or ## for headings.
 - For simple questions (1 item): Answer in 1-3 plain sentences.
 - For multiple items (3+ professors, courses, options): Use a dash list, one item per line.
