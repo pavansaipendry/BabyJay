@@ -825,6 +825,9 @@ No bullet points. No emojis."""
                             print(f"[DEBUG] Retry error: {e}")
 
             # Follow-up fallback to recent context — only if it's actually a follow-up
+            _is_pronoun_followup = bool(
+                self._conversation_history and self._PRONOUN_RE.search(search_question)
+            )
             if self._is_simple_followup(search_question):
                 if not context and self.recent_context:
                     # No fresh retrieval — fall back to last known context
@@ -832,9 +835,18 @@ No bullet points. No emojis."""
                     if self.debug:
                         print("[DEBUG] Using recent_context for follow-up")
                 elif context:
-                    # Fresh retrieval on a follow-up — update recent_context so
-                    # subsequent follow-ups reference the new topic, not the old one.
-                    self.recent_context = context
+                    if _is_pronoun_followup and self.recent_context and len(self.recent_context) > len(context):
+                        # Pronoun-based follow-up (he/she/his/her) found fresh context,
+                        # but the pronoun refers to an entity already in recent_context.
+                        # Prefer the richer prior context so "his office?" doesn't
+                        # replace professor data with unrelated building-info results.
+                        if self.debug:
+                            print("[DEBUG] Pronoun follow-up: keeping richer recent_context over fresh context")
+                        context = self.recent_context
+                    else:
+                        # Non-pronoun follow-up shifting to a new topic, or fresh
+                        # context is richer — update recent_context.
+                        self.recent_context = context
             else:
                 # New topic — update or clear recent_context
                 self.recent_context = context if context else ""

@@ -102,9 +102,8 @@ class ContextBuilder:
         fields = {"name", "title", "department"}
 
         if intent == "faculty_search":
-            fields.update({"email", "department", "research"})
-            if has_any(["office", "where", "find", "location", "room"]):
-                fields.update({"office", "building", "phone"})
+            # Always include contact + location — they're compact and almost always useful
+            fields.update({"email", "department", "research", "office", "building", "phone"})
             if has_any(["email", "contact", "reach"]):
                 fields.update({"email", "phone"})
             if has_any(["research", "work", "study", "interested", "ml", "ai"]):

@@ -193,6 +193,9 @@ class QueryClassifier:
                 # Require an actual faculty noun later in the sentence — avoids
                 # scoring "research in quantum" as a faculty query.
                 r"\b(research(?:ing)?\s+(?:in|on)|working\s+on|studies|studying)\b.*\b(professor|professors|faculty|researcher|researchers)\b",
+                # "tell me about [Name] in EECS / as a professor" and "who is [Name] in EECS"
+                r"\b(tell me about|who is|who's|about)\b.+\b(eecs|professor|prof|faculty|department|dept|researcher|phd)\b",
+                r"\b(eecs|professor|prof|faculty|phd)\b.+\b(tell me about|who is|who's)\b",
             ],
             "course_info": [
                 # Course code patterns (EECS 168, AE 345, etc.)
@@ -299,7 +302,8 @@ class QueryClassifier:
     _FACULTY_CUE_RE = re.compile(
         r"\b(professor|professors|prof|profs|faculty|researcher|researchers|"
         r"instructor|instructors|teacher|teachers|advisor|advisors|dean|deans|"
-        r"who\s+teaches|who\s+does\s+research|expert\s+in|specialist\s+in|dr\.?)\b",
+        r"who\s+teaches|who\s+does\s+research|expert\s+in|specialist\s+in|dr\.?|"
+        r"eecs|phd|ph\.d)\b",
         re.IGNORECASE,
     )
 
