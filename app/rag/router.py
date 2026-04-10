@@ -373,9 +373,23 @@ class QueryRouter:
         elif level:
             results = self.course_retriever.search_by_level(level, limit=limit)
         
-        # Strategy 4: General search (uses preprocessor for typos/synonyms)
+        # Strategy 4: General search.
+        # For long conversational queries ("I'm trying to enroll in a machine learning
+        # course, any recommendations?"), extract the key topic phrase so the keyword
+        # search finds the right courses rather than noise-matching unrelated ones.
         if not results:
-            results = self.course_retriever.search(query, limit=limit)
+            import re as _re
+            _tech_topic_re = _re.compile(
+                r"\b(machine\s+learning|deep\s+learning|artificial\s+intelligence|"
+                r"data\s+structures?|algorithms?|operating\s+systems?|computer\s+networks?|"
+                r"computer\s+vision|natural\s+language\s+processing|nlp|robotics|"
+                r"embedded\s+systems?|software\s+engineering|cybersecurity|compilers?|"
+                r"data\s+science|neural\s+networks?|reinforcement\s+learning)\b",
+                _re.IGNORECASE,
+            )
+            _topic_match = _tech_topic_re.search(query)
+            search_term = _topic_match.group(0) if _topic_match else query
+            results = self.course_retriever.search(search_term, limit=limit)
         
         # Strategy 5: Fallback to vector search if still no results
         if not results and use_vector_fallback:

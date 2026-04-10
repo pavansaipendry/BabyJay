@@ -640,6 +640,28 @@ No bullet points. No emojis."""
 
         return "\n".join(filtered_lines)
 
+    def _is_domain_mismatch(self, fresh_ctx: str, recent_ctx: str) -> bool:
+        """Return True if fresh_ctx is from a different domain than recent_ctx.
+
+        Used to prevent a pronoun follow-up (he/she/his/her) from replacing
+        professor/course context with unrelated building-info or office context.
+        """
+        def _domain(ctx: str) -> str:
+            if "Professor:" in ctx or "=== FACULTY INFORMATION ===" in ctx or "[Source: faculty_retriever]" in ctx:
+                return "faculty"
+            if ("Course:" in ctx or "=== COURSE INFORMATION ===" in ctx
+                    or "[Source: course_retriever]" in ctx):
+                return "course"
+            if "=== OFFICE INFORMATION ===" in ctx or "[Source: offices_retriever]" in ctx:
+                return "building"
+            if "Facility:" in ctx or "[Source: eecs_resources_retriever]" in ctx:
+                return "building"
+            if "dining" in ctx.lower() or "[Source: campus_retriever]" in ctx:
+                return "campus"
+            return "other"
+
+        return _domain(fresh_ctx) != _domain(recent_ctx)
+
     def _expand_followup_question(self, question: str) -> str:
         if not self._validate_query(question):
             return question
@@ -835,17 +857,16 @@ No bullet points. No emojis."""
                     if self.debug:
                         print("[DEBUG] Using recent_context for follow-up")
                 elif context:
-                    if _is_pronoun_followup and self.recent_context and len(self.recent_context) > len(context):
-                        # Pronoun-based follow-up (he/she/his/her) found fresh context,
-                        # but the pronoun refers to an entity already in recent_context.
-                        # Prefer the richer prior context so "his office?" doesn't
-                        # replace professor data with unrelated building-info results.
+                    if _is_pronoun_followup and self.recent_context and self._is_domain_mismatch(context, self.recent_context):
+                        # Pronoun-based follow-up found fresh context from a DIFFERENT
+                        # domain (e.g. building info when we're in a professor thread).
+                        # Discard the wrong-domain fresh context and keep recent_context
+                        # so "his office?" doesn't wipe professor data with building info.
                         if self.debug:
-                            print("[DEBUG] Pronoun follow-up: keeping richer recent_context over fresh context")
+                            print("[DEBUG] Pronoun follow-up: domain mismatch — keeping recent_context")
                         context = self.recent_context
                     else:
-                        # Non-pronoun follow-up shifting to a new topic, or fresh
-                        # context is richer — update recent_context.
+                        # Same domain update or non-pronoun follow-up — use fresh context.
                         self.recent_context = context
             else:
                 # New topic — update or clear recent_context
