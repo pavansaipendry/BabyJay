@@ -1,103 +1,144 @@
 """
 Re-ranker for BabyJay RAG
 ==========================
-Re-scores retrieved results against the original query for better precision.
+Re-scores retrieved results against the original query using a local
+cross-encoder model — purpose-built for passage reranking.
 
-Uses Claude Haiku as a lightweight cross-encoder re-ranker.
-Each result is scored for relevance to the query, then results are re-sorted.
+Model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  - Trained on MS MARCO (real search queries + passages)
+  - Latency: ~5-30ms for 15 passages on CPU
+  - Free, runs locally — no API calls
 
-This dramatically improves retrieval quality — the top result after re-ranking
-is almost always more relevant than the top result from vector search alone.
+Why cross-encoder beats LLM reranking:
+  - Jointly encodes (query, passage) — sees full interaction
+  - Trained end-to-end for relevance scoring, not general reasoning
+  - Deterministic and ~10-20x faster than an LLM API call
+  - Scores are comparable across queries (stable ranking signal)
+
+Note on environment:
+  torch._dynamo is stubbed before the transformers import because
+  torch 2.3.1 has a broken ONNX import path that transformers triggers
+  via _prepare_4d_attention_mask_for_sdpa. The stub is safe — we never
+  use torch.compile here, and is_compiling() → False is correct.
 """
 
-import os
-import re
-import json
-from typing import List, Dict, Any, Optional
-import anthropic
-from dotenv import load_dotenv
+import sys
+import types
+from functools import lru_cache
+from typing import List, Dict
 
-load_dotenv()
+MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_MAX_CANDIDATES = 20  # Beyond this, marginal gain is negligible
+_PASSAGE_CHAR_LIMIT = 800  # ~200 tokens; cross-encoders cap at 512 tokens
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+def _patch_torch_dynamo() -> None:
+    """
+    Stub out torch._dynamo to work around a broken ONNX import in
+    torch 2.3.1 that prevents transformers from loading when _dynamo is
+    lazily imported during attention-mask utilities.
+
+    Safe as long as we never use torch.compile (we don't).
+    """
+    if "torch._dynamo" not in sys.modules:
+        stub = types.ModuleType("torch._dynamo")
+        stub.is_compiling = lambda: False
+        stub.config = types.SimpleNamespace(suppress_errors=True)
+        sys.modules["torch._dynamo"] = stub
+
+
+@lru_cache(maxsize=1)
+def _load_model():
+    """
+    Load the cross-encoder model once and cache it for the process lifetime.
+
+    attn_implementation="eager" bypasses PyTorch SDPA / torch.compile, which
+    is broken on torch 2.3.1 with transformers 4.44.x (ONNX exporter issue).
+    Eager attention is ~same speed for batch sizes < 64 on CPU.
+    """
+    _patch_torch_dynamo()
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    import torch
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        attn_implementation="eager",   # avoid broken SDPA path on torch 2.3.1
+    )
+    model.eval()
+    return tokenizer, model
 
 
 class Reranker:
-    """Re-rank retrieved results by relevance to the query."""
+    """
+    Re-rank retrieved results using a local cross-encoder model.
+
+    Usage::
+
+        reranker = Reranker()
+        ranked = reranker.rerank("machine learning courses", results, top_k=5)
+    """
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        # Eagerly load so the first real query isn't slow
+        self._tokenizer, self._model = _load_model()
 
     def rerank(self, query: str, results: List[Dict], top_k: int = 5) -> List[Dict]:
         """
-        Re-rank results by relevance to query.
+        Re-rank results by relevance to the query.
 
         Args:
-            query: The user's original query
+            query:   The user's original query
             results: List of dicts with at least a "content" key
-            top_k: Number of top results to return
+            top_k:   Number of top results to return after reranking
 
         Returns:
-            Re-ranked list of results (best first), with added "rerank_score" field
+            Re-ranked list (best first). Each dict gains a "rerank_score" key
+            containing the raw cross-encoder logit (higher = more relevant).
         """
-        if not results or len(results) <= 1:
+        if not results:
+            return results
+        if len(results) == 1:
+            results[0].setdefault("rerank_score", 1.0)
             return results
 
-        # Don't re-rank if we have very few results
-        if len(results) <= 3:
-            return results[:top_k]
+        import torch
 
-        # Build the scoring prompt
-        docs_text = ""
-        for i, r in enumerate(results[:15]):  # Cap at 15 to control costs
-            content = r.get("content", "")
-            # Truncate long documents for scoring
-            if len(content) > 300:
-                content = content[:300] + "..."
-            docs_text += f"\n[DOC {i}]: {content}\n"
+        candidates = results[:_MAX_CANDIDATES]
 
-        try:
-            response = self.client.messages.create(
-                model=HAIKU_MODEL,
-                system=(
-                    "You are a relevance scorer. Given a query and documents, "
-                    "score each document's relevance to the query from 0-10. "
-                    "Return ONLY a JSON array of scores in order. Example: [8, 2, 9, 1, 5]\n"
-                    "Score 0 = completely irrelevant, 10 = perfectly answers the query."
-                ),
-                messages=[{
-                    "role": "user",
-                    "content": f"Query: {query}\n\nDocuments:{docs_text}\n\nScores (JSON array only):"
-                }],
-                temperature=0,
-                max_tokens=100,
+        # Build (query, passage) pairs
+        pairs: List[tuple] = []
+        for r in candidates:
+            passage = r.get("content", "")
+            if len(passage) > _PASSAGE_CHAR_LIMIT:
+                passage = passage[:_PASSAGE_CHAR_LIMIT]
+            pairs.append((query, passage))
+
+        # Single batched forward pass — no gradient needed
+        with torch.no_grad():
+            inputs = self._tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                max_length=512,
             )
+            scores = self._model(**inputs).logits.squeeze(-1).tolist()
 
-            scores_text = response.content[0].text.strip()
-            # Parse JSON array of scores — json.loads is safer than eval.
-            scores_match = re.search(r'\[[\d,\s]+\]', scores_text)
-            scores: List[int] = []
-            if scores_match:
-                try:
-                    scores = [int(x) for x in json.loads(scores_match.group())]
-                except (ValueError, json.JSONDecodeError):
-                    scores = []
-            if not scores:
-                # Fallback: try to extract numbers
-                scores = [int(x) for x in re.findall(r'\d+', scores_text)]
+        # If logits is a scalar (single pair), wrap it
+        if isinstance(scores, float):
+            scores = [scores]
 
-            # Attach scores and sort
-            scored_results = []
-            for i, r in enumerate(results[:15]):
-                score = scores[i] if i < len(scores) else 0
-                r_copy = dict(r)
-                r_copy["rerank_score"] = score
-                scored_results.append(r_copy)
+        # Attach scores and sort descending
+        scored: List[Dict] = []
+        for r, score in zip(candidates, scores):
+            r_copy = dict(r)
+            r_copy["rerank_score"] = float(score)
+            scored.append(r_copy)
 
-            scored_results.sort(key=lambda x: x["rerank_score"], reverse=True)
-            return scored_results[:top_k]
+        scored.sort(key=lambda x: x["rerank_score"], reverse=True)
 
-        except Exception as e:
-            # On any error, return original order
-            return results[:top_k]
+        # Tail (results beyond _MAX_CANDIDATES) keep original order — appended
+        # after scored results in case top_k > _MAX_CANDIDATES.
+        tail = results[_MAX_CANDIDATES:]
+        return (scored + tail)[:top_k]

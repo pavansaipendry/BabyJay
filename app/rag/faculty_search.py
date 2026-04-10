@@ -49,7 +49,7 @@ class FacultySearcher:
         # Get the faculty collection with OpenAI embedding function
         openai_ef = embedding_functions.OpenAIEmbeddingFunction(
             api_key=os.getenv("OPENAI_API_KEY"),
-            model_name="text-embedding-3-small"
+            model_name="text-embedding-3-large"
         )
         
         self.collection = self.client.get_collection(
@@ -168,7 +168,7 @@ class FacultySearcher:
             'total_faculty': count,
             'collection_name': 'faculty',
             'storage': 'ChromaDB',
-            'embeddings': 'OpenAI text-embedding-3-small'
+            'embeddings': 'OpenAI text-embedding-3-large'
         }
 
 

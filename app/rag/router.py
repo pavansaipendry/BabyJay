@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .classifier import QueryClassifier
 from .faculty_retriever import FacultyRetriever
+from .faculty_search import FacultySearcher
 from .campus_retriever import CampusRetriever
 from .course_retriever import CourseRetriever
 from .context_builder import ContextBuilder
@@ -49,10 +50,23 @@ def _get_reranker():
 class QueryRouter:
     """Routes queries to appropriate retrievers based on classification."""
 
+    # Minimum number of results needed before reranking pays off
+    _RERANK_MIN = 2
+
+    def _rerank(self, query: str, results: List, top_k: int = 10) -> List:
+        """Apply cross-encoder reranking when we have enough candidates."""
+        if not results or len(results) < self._RERANK_MIN:
+            return results
+        reranker = _get_reranker()
+        if reranker is None:
+            return results
+        return reranker.rerank(query, results, top_k=top_k)
+
     def __init__(self):
         """Initialize router with classifier and retrievers."""
         self.classifier = QueryClassifier()
-        self.faculty_retriever = FacultyRetriever()
+        self.faculty_retriever = FacultyRetriever()   # kept for exact name lookup + dept list
+        self.faculty_searcher = FacultySearcher()     # ChromaDB semantic search — primary path
         self.campus_retriever = CampusRetriever()
         self.course_retriever = CourseRetriever()
         self.context_builder = ContextBuilder()
@@ -298,182 +312,211 @@ class QueryRouter:
 
     def _route_faculty(self, query: str, entities: Dict, scope: str,
                        classification: Dict, use_vector_fallback: bool) -> Dict[str, Any]:
-        """Route faculty search queries."""
+        """
+        Route faculty queries.
+
+        Retrieval strategy:
+          1. Exact name  → FacultyRetriever JSON (fast, precise string match)
+          2. Dept-only complete list → FacultyRetriever JSON (guaranteed full list)
+          3. Everything else (research area, semantic query, dept+topic)
+             → FacultySearcher ChromaDB (vector + metadata filter)
+          4. No results → vector fallback
+        """
         department = entities.get("department")
         research_area = entities.get("research_area")
         name = entities.get("name")
-        
+
         results = []
-        
-        # Strategy 1: Search by name if provided
+        source = "faculty_searcher"
+        top_k = 100 if scope == "complete_list" else 10
+
+        # ── Strategy 1: Exact / partial name lookup ───────────────────────
         if name and not department and not research_area:
-            results = self.faculty_retriever.search_by_name(name)
-        
-        # Strategy 2: Department + optional research filter
-        elif department:
-            if research_area:
-                results = self.faculty_retriever.search(
-                    department=department,
-                    research_area=research_area,
-                    scope=scope
-                )
-            else:
-                results = self.faculty_retriever.get_department_faculty(
-                    department,
-                    limit=None if scope == "complete_list" else 10
-                )
-        
-        # Strategy 3: Research area across all departments
-        elif research_area:
-            results = self.faculty_retriever.search(
-                research_area=research_area,
-                scope=scope
+            results = self.faculty_retriever.search_by_name(name, limit=top_k)
+            source = "faculty_retriever"
+
+        # ── Strategy 2: Department-only "complete list" request ───────────
+        elif department and not research_area and scope == "complete_list":
+            results = self.faculty_retriever.get_department_faculty(
+                department, limit=None
             )
-        
-        # Strategy 4: Fallback to vector search
+            source = "faculty_retriever"
+
+        # ── Strategy 3: Semantic (research area / dept+topic / open query) ─
+        else:
+            # Build the query term for the vector search
+            search_q = research_area or query
+            dept_filter = department  # FacultySearcher accepts partial dept name
+            results_raw = self.faculty_searcher.search(
+                search_q, top_k=top_k, department_filter=dept_filter
+            )
+            # Normalise FacultySearcher dicts to the format format_for_context expects
+            results = [
+                {
+                    "name":               r.get("name", ""),
+                    "department":         r.get("department", ""),
+                    "department_key":     r.get("department", "").lower().replace(" ", "_"),
+                    "email":              r.get("email", ""),
+                    "phone":              r.get("phone", ""),
+                    "office":             r.get("office", ""),
+                    "building":           r.get("building", ""),
+                    "profile_url":        r.get("profile_url", ""),
+                    # research_interests expected as a list by format_for_context
+                    "research_interests": [r.get("document", "")] if r.get("document") else [],
+                    "content":            r.get("document", ""),
+                    "relevance_score":    r.get("score", 0),
+                }
+                for r in results_raw
+            ]
+
+        # ── Strategy 4: Nothing found → vector fallback ───────────────────
         if not results and use_vector_fallback:
             return self._route_vector_fallback(query, "faculty_search", classification)
-        
-        # Format results
-        context = self.faculty_retriever.format_for_context(results)
-        
+
+        # Deduplicate by name
+        seen: set = set()
+        deduped: List = []
+        for r in results:
+            n = r.get("name", "").lower()
+            if n and n in seen:
+                continue
+            seen.add(n)
+            deduped.append(r)
+
+        # Rerank semantically before formatting
+        deduped = self._rerank(query, deduped, top_k=top_k)
+
+        context = self.faculty_retriever.format_for_context(deduped)
+
         return {
-            "results": results,
+            "results": deduped,
             "context": context,
-            "source": "faculty_retriever",
+            "source": source,
             "query_info": classification,
-            "result_count": len(results)
+            "result_count": len(deduped),
         }
     
     def _route_courses(self, query: str, entities: Dict, scope: str,
                        classification: Dict, use_vector_fallback: bool) -> Dict[str, Any]:
-        """Route course queries using CourseRetriever."""
+        """
+        Route course queries.
+
+        Retrieval strategy:
+          1. Exact course code  → CourseRetriever JSON (fast, authoritative)
+          2. Everything else    → Retriever ChromaDB (vector + BM25 hybrid, source:"course")
+          3. No results         → vector fallback
+        """
         course_code = entities.get("course_code")
-        subject = entities.get("subject")
-        level = entities.get("level")
-        credits = entities.get("credits")
-        
-        results = []
         limit = 50 if scope == "complete_list" else 10
-        
-        # Strategy 1: Exact course code lookup
+
+        # ── Strategy 1: Exact course code (e.g. "EECS 168") ──────────────
         if course_code:
             course = self.course_retriever.get_course(course_code)
             if course:
                 results = [course]
-        
-        # Strategy 2: Subject + optional level filter
-        elif subject:
-            results = self.course_retriever.search_by_subject(subject, limit=limit)
-            # Filter by level if specified
-            if level and results:
-                results = [c for c in results if c.get("level", "").lower() == level.lower()]
-        
-        # Strategy 3: Level only
-        elif level:
-            results = self.course_retriever.search_by_level(level, limit=limit)
-        
-        # Strategy 4: General search.
-        # For long conversational queries ("I'm trying to enroll in a machine learning
-        # course, any recommendations?"), extract the key topic phrase so the keyword
-        # search finds the right courses rather than noise-matching unrelated ones.
-        if not results:
-            import re as _re
-            _tech_topic_re = _re.compile(
-                r"\b(machine\s+learning|deep\s+learning|artificial\s+intelligence|"
-                r"data\s+structures?|algorithms?|operating\s+systems?|computer\s+networks?|"
-                r"computer\s+vision|natural\s+language\s+processing|nlp|robotics|"
-                r"embedded\s+systems?|software\s+engineering|cybersecurity|compilers?|"
-                r"data\s+science|neural\s+networks?|reinforcement\s+learning)\b",
-                _re.IGNORECASE,
-            )
-            _topic_match = _tech_topic_re.search(query)
-            search_term = _topic_match.group(0) if _topic_match else query
-            results = self.course_retriever.search(search_term, limit=limit)
-        
-        # Strategy 5: Fallback to vector search if still no results
-        if not results and use_vector_fallback:
+                context = self.course_retriever.format_for_context(results)
+                return {
+                    "results": results,
+                    "context": context,
+                    "source": "course_retriever",
+                    "query_info": classification,
+                    "result_count": len(results),
+                }
+
+        # ── Strategy 2: Semantic search via ChromaDB + BM25 ──────────────
+        raw = self.vector_retriever.search_courses(query, n_results=limit)
+
+        # Rerank
+        raw = self._rerank(query, raw, top_k=min(limit, 10))
+
+        if not raw and use_vector_fallback:
             return self._route_vector_fallback(query, "course_info", classification)
-        
-        # Format results
-        context = self.course_retriever.format_for_context(results)
-        
+
+        # Build context via ContextBuilder (handles [Source: ...] citations)
+        context = self.context_builder.build(
+            query,
+            {"results": raw, "source": "course_vector", "query_info": classification},
+        )
+
         return {
-            "results": results,
+            "results": raw,
             "context": context,
-            "source": "course_retriever",
+            "source": "course_vector",
             "query_info": classification,
-            "result_count": len(results)
+            "result_count": len(raw),
         }
     
+    def _route_campus_vector(
+        self,
+        query: str,
+        source_filter: str,
+        classification: Dict,
+        n_results: int,
+    ) -> Dict[str, Any]:
+        """
+        Shared ChromaDB retrieval for all campus data domains.
+
+        Replaces CampusRetriever substring matching with vector + BM25 hybrid
+        search, then applies cross-encoder reranking for precision.
+        """
+        raw = self.vector_retriever.search(
+            query, n_results=n_results, source_filter=source_filter
+        )
+        raw = self._rerank(query, raw, top_k=min(n_results, 10))
+
+        context = self.context_builder.build(
+            query,
+            {"results": raw, "source": source_filter, "query_info": classification},
+        )
+
+        return {
+            "results": raw,
+            "context": context,
+            "source": f"vector_{source_filter}",
+            "query_info": classification,
+            "result_count": len(raw),
+        }
+
     def _route_dining(self, query: str, entities: Dict, scope: str,
                       classification: Dict) -> Dict[str, Any]:
-        """Route dining queries using CampusRetriever."""
-        limit = 20 if scope == "complete_list" else 5
-        
-        results = self.campus_retriever.search_dining(query, limit=limit)
-        context = self.campus_retriever.format_dining_context(results)
-        
-        return {
-            "results": results,
-            "context": context,
-            "source": "campus_retriever",
-            "query_info": classification,
-            "result_count": len(results)
-        }
-    
+        n = 20 if scope == "complete_list" else 5
+        return self._route_campus_vector(query, "dining", classification, n)
+
     def _route_housing(self, query: str, entities: Dict, scope: str,
                        classification: Dict) -> Dict[str, Any]:
-        """Route housing queries using CampusRetriever."""
-        limit = 50 if scope == "complete_list" else 10
-        
-        results = self.campus_retriever.search_housing(query, limit=limit)
-        context = self.campus_retriever.format_housing_context(results)
-        
-        return {
-            "results": results,
-            "context": context,
-            "source": "campus_retriever",
-            "query_info": classification,
-            "result_count": len(results)
-        }
-    
+        n = 50 if scope == "complete_list" else 10
+        return self._route_campus_vector(query, "housing", classification, n)
+
     def _route_transit(self, query: str, entities: Dict, scope: str,
                        classification: Dict) -> Dict[str, Any]:
-        """Route transit queries using CampusRetriever."""
-        limit = 20 if scope == "complete_list" else 5
-        
-        # Check if asking specifically about KU routes
-        query_lower = query.lower()
-        if 'ku' in query_lower or 'campus' in query_lower:
-            results = self.campus_retriever.get_ku_transit()[:limit]
-        else:
-            results = self.campus_retriever.search_transit(query, limit=limit)
-        
-        context = self.campus_retriever.format_transit_context(results)
-        
-        return {
-            "results": results,
-            "context": context,
-            "source": "campus_retriever",
-            "query_info": classification,
-            "result_count": len(results)
-        }
-    
+        n = 20 if scope == "complete_list" else 5
+        return self._route_campus_vector(query, "transit", classification, n)
+
     def _route_tuition(self, query: str, entities: Dict, scope: str,
                        classification: Dict) -> Dict[str, Any]:
-        """Route tuition/financial queries using CampusRetriever."""
-        limit = 30 if scope == "complete_list" else 10
-        
-        results = self.campus_retriever.search_tuition(query, limit=limit)
-        context = self.campus_retriever.format_tuition_context(results)
-        
+        """
+        Route financial queries.
+
+        Searches both 'tuition' and 'financial_aid' sources because the
+        intent covers both cost questions (tuition rates) and aid questions
+        (FAFSA, grants, scholarships). Results are merged and reranked.
+        """
+        n = 30 if scope == "complete_list" else 10
+        raw_tuition = self.vector_retriever.search(query, n_results=n, source_filter="tuition")
+        raw_aid = self.vector_retriever.search(query, n_results=n, source_filter="financial_aid")
+        merged = raw_tuition + raw_aid
+        merged = self._rerank(query, merged, top_k=min(n, 10))
+
+        context = self.context_builder.build(
+            query,
+            {"results": merged, "source": "tuition", "query_info": classification},
+        )
         return {
-            "results": results,
+            "results": merged,
             "context": context,
-            "source": "campus_retriever",
+            "source": "vector_tuition",
             "query_info": classification,
-            "result_count": len(results)
+            "result_count": len(merged),
         }
     
     def _route_vector_fallback(self, query: str, intent: str,
@@ -498,11 +541,7 @@ class QueryRouter:
 
         result_key = intent_to_method.get(intent, "")
         specific_results = results.get(result_key) or []
-
-        # Re-rank vector results for better precision
-        reranker = _get_reranker()
-        if reranker and specific_results and len(specific_results) > 3:
-            specific_results = reranker.rerank(query, specific_results, top_k=5)
+        specific_results = self._rerank(query, specific_results, top_k=5)
 
         # Build compressed context with [Source: ...] citations via the shared
         # ContextBuilder. Fall back to smart_search's pre-built text only if the

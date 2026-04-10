@@ -59,7 +59,7 @@ def main():
     print("\n4. Creating new 'faculty' collection with OpenAI embeddings...")
     openai_ef = embedding_functions.OpenAIEmbeddingFunction(
         api_key=os.getenv("OPENAI_API_KEY"),
-        model_name="text-embedding-3-small"
+        model_name="text-embedding-3-large"
     )
     
     collection = client.create_collection(

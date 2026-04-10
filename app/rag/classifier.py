@@ -200,10 +200,12 @@ class QueryClassifier:
             "course_info": [
                 # Course code patterns (EECS 168, AE 345, etc.)
                 r"\b[A-Z]{2,4}\s*\d{3,4}\b",
-                # Keywords
-                r"\b(course|courses|class|classes)\b",
+                # Keywords — "classes start/end/begin" are calendar events, not course queries
+                r"\b(course|courses)\b",
+                r"\b(class|classes)\b(?!\s+(?:start|end|begin|schedule|schedule|date|first|last|during|after|before|until))",
                 r"\b(prerequisite|prerequisites|prereq|prereqs|corequisite|corequisites)\b",
-                r"\b(credit|credits|credit hour|credit hours)\b",
+                # "credit hours" next to tuition/cost/fee = financial, not course
+                r"\b(credit|credits|credit hour|credit hours)\b(?!.*\b(tuition|cost|fee|pay|price|rate|per)\b)(?=.*\b(course|class|eecs|take|enroll)\b)",
                 r"\b(enroll|enrollment|register|registration)\b",
                 r"\b(syllabus|curriculum)\b",
                 # Only count raw field names as course signals when they appear
@@ -235,6 +237,10 @@ class QueryClassifier:
                 r"\b(financial aid|fafsa|scholarship|grant|pell|loan)\b",
                 r"\b(undergraduate|graduate).*(cost|tuition|fee|fees|price)\b",
                 r"\b(cost|tuition|fee|fees|price).*(undergraduate|graduate)\b",
+                # "per credit hour" / "credit hour cost" is tuition, not a course query
+                r"\b(per credit hour|credit hour cost|cost per credit|tuition per|rate per credit)\b",
+                r"\b(out.of.state|in.state|nonresident|resident).*(tuition|cost|rate|fee)\b",
+                r"\b(tuition|cost|rate|fee).*(out.of.state|in.state|nonresident|resident)\b",
             ],
             "library_info": [
                 r"\b(library|libraries|study room|study space|borrow|checkout)\b",
@@ -247,6 +253,9 @@ class QueryClassifier:
             ],
             "calendar_info": [
                 r"\b(calendar|semester|finals|break|holiday|when does)\b",
+                r"\bclasses?\s+(start|end|begin|schedule|first day|last day)\b",
+                r"\b(spring|fall|summer|winter)\s+(semester|classes|break|session)\b",
+                r"\bwhen\s+(do|does|did|are|is).*(class|semester|school|finals)\b",
             ],
         }
         

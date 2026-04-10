@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Use OpenAI embeddings
-EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_MODEL = "text-embedding-3-large"
 
 
 def get_project_root() -> Path:

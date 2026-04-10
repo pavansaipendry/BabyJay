@@ -216,25 +216,41 @@ class ContextBuilder:
         return "\n".join(lines)
 
     def _format_course(self, r: Dict, fields: set, source: str) -> str:
-        """Format a course result with only relevant fields."""
+        """
+        Format a course result.
+
+        Works for both:
+          - JSON CourseRetriever results (fields at top level)
+          - ChromaDB vector results (fields in metadata, raw text in 'content')
+        """
+        md = r.get("metadata") or {}
+
+        def pick(key: str):
+            return r.get(key) or md.get(key)
+
+        code = pick("course_code") or ""
+        title = pick("title") or ""
+
+        # Vector result with no structured fields — use raw content directly
+        if not code and not title:
+            content = r.get("content", "")
+            if content:
+                return f"[Source: {source}]\n{content[:500]}"
+            return ""
+
         lines = [f"[Source: {source}]"]
-        code = r.get("course_code", "")
-        title = r.get("title", "")
         lines.append(f"Course: {code} - {title}" if code else f"Course: {title}")
 
-        if "credits" in fields and r.get("credits"):
-            lines.append(f"Credits: {r['credits']}")
-        if "level" in fields and r.get("level"):
-            lines.append(f"Level: {r['level']}")
-        if "description" in fields and r.get("description"):
-            desc = r["description"][:200]
+        if "credits" in fields and pick("credits"):
+            lines.append(f"Credits: {pick('credits')}")
+        if "level" in fields and pick("level"):
+            lines.append(f"Level: {pick('level')}")
+        if "description" in fields and pick("description"):
+            desc = str(pick("description"))[:200]
             lines.append(f"Description: {desc}")
-        if "prerequisites" in fields and r.get("prerequisites"):
-            lines.append(f"Prerequisites: {r['prerequisites']}")
+        if "prerequisites" in fields and pick("prerequisites"):
+            lines.append(f"Prerequisites: {pick('prerequisites')}")
 
-        # Synthesize a KU catalog search URL from the course code — the
-        # course JSON doesn't carry URLs but this search link reliably
-        # resolves to the course page on catalog.ku.edu.
         if code:
             catalog_url = "https://catalog.ku.edu/search/?P=" + code.replace(" ", "+")
             lines.append(f"URL: {catalog_url}")
@@ -242,14 +258,27 @@ class ContextBuilder:
         return "\n".join(lines)
 
     def _format_dining(self, r: Dict, fields: set, source: str) -> str:
+        md = r.get("metadata") or {}
+
+        def pick(key):
+            return r.get(key) or md.get(key)
+
+        name = pick("name")
+        # Vector result — fall back to raw content
+        if not name:
+            content = r.get("content", "")
+            if content:
+                return f"[Source: {source}]\n{content[:400]}"
+            return ""
+
         lines = [f"[Source: {source}]"]
-        lines.append(f"Name: {r.get('name', 'Unknown')}")
-        if r.get("building"):
-            lines.append(f"Building: {r['building']}")
-        if r.get("type"):
-            lines.append(f"Type: {r['type']}")
-        if "hours" in fields and r.get("hours"):
-            hours = r["hours"]
+        lines.append(f"Name: {name}")
+        if pick("building"):
+            lines.append(f"Building: {pick('building')}")
+        if pick("type"):
+            lines.append(f"Type: {pick('type')}")
+        if "hours" in fields and pick("hours"):
+            hours = pick("hours")
             if isinstance(hours, dict):
                 hours_parts = [f"{k}: {v}" for k, v in hours.items() if v]
                 lines.append(f"Hours: {'; '.join(hours_parts[:3])}")
@@ -259,22 +288,46 @@ class ContextBuilder:
         return "\n".join(lines)
 
     def _format_transit(self, r: Dict, fields: set, source: str) -> str:
+        md = r.get("metadata") or {}
+
+        def pick(key):
+            return r.get(key) or md.get(key)
+
+        route_name = pick("route_name") or pick("name")
+        if not route_name:
+            content = r.get("content", "")
+            if content:
+                return f"[Source: {source}]\n{content[:400]}"
+            return ""
+
         lines = [f"[Source: {source}]"]
-        lines.append(f"Route: {r.get('route_name', r.get('name', 'Unknown'))}")
-        if r.get("route_number"):
-            lines.append(f"Number: {r['route_number']}")
-        if r.get("description"):
-            lines.append(f"Info: {r['description'][:150]}")
+        lines.append(f"Route: {route_name}")
+        if pick("route_number"):
+            lines.append(f"Number: {pick('route_number')}")
+        if pick("description"):
+            lines.append(f"Info: {str(pick('description'))[:150]}")
         lines.append("Source URL: https://lawrenceks.org/transit/")
         return "\n".join(lines)
 
     def _format_housing(self, r: Dict, fields: set, source: str) -> str:
+        md = r.get("metadata") or {}
+
+        def pick(key):
+            return r.get(key) or md.get(key)
+
+        name = pick("name")
+        if not name:
+            content = r.get("content", "")
+            if content:
+                return f"[Source: {source}]\n{content[:400]}"
+            return ""
+
         lines = [f"[Source: {source}]"]
-        lines.append(f"Name: {r.get('name', 'Unknown')}")
-        if r.get("type"):
-            lines.append(f"Type: {r['type']}")
-        if r.get("description"):
-            lines.append(f"Info: {r['description'][:200]}")
+        lines.append(f"Name: {name}")
+        if pick("type"):
+            lines.append(f"Type: {pick('type')}")
+        if pick("description"):
+            lines.append(f"Info: {str(pick('description'))[:200]}")
         lines.append("Source URL: https://housing.ku.edu")
         return "\n".join(lines)
 

@@ -66,7 +66,9 @@ class Retriever:
         except Exception:
             return None
 
-    def search(self, query: str, n_results: int = 5, source_filter: Optional[str] = None, min_relevance: float = 0.25) -> List[Dict[str, Any]]:
+    def search(self, query: str, n_results: int = 5, source_filter: Optional[str] = None, min_relevance: float = 0.25) -> List[Dict[str, Any]]:  # noqa: E501
+        if not query or not query.strip():
+            return []
         # Vector search (semantic)
         where_filter = {"source": source_filter} if source_filter else None
         results = self.collection.query(
