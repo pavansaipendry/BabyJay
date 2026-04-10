@@ -451,12 +451,23 @@ No bullet points. No emojis."""
         re.IGNORECASE,
     )
 
+    # Pronouns that always need prior-context resolution, regardless of length
+    _PRONOUN_RE = re.compile(
+        r"\b(he|she|him|her|his|hers|they|them|their|it\b|that professor|this professor|"
+        r"that course|this course|that program|this program)\b",
+        re.IGNORECASE,
+    )
+
     def _is_simple_followup(self, question: str) -> bool:
         q = question.lower().strip()
-        if len(question.split()) > 8:
-            return False
         if q in ["it", "it?"] and self._conversation_history:
             return True
+        # Always treat pronoun-containing questions as follow-ups so we expand them
+        if self._conversation_history and self._PRONOUN_RE.search(q):
+            return True
+        # For short questions, check the broader follow-up pattern
+        if len(question.split()) > 8:
+            return False
         return bool(self._FOLLOWUP_RE.search(q))
 
     def _is_department_filter(self, question: str) -> bool:
