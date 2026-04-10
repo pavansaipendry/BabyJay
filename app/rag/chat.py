@@ -538,7 +538,7 @@ No bullet points. No emojis."""
         if "?" in q_lower:
             return False
         if re.search(
-            r"\b(what|who|where|when|why|how|which|is|are|of|at|for|to|do|does|tell|show|give|list)\b",
+            r"\b(what|who|where|when|why|how|which|is|are|at|for|to|do|does|tell|show|give|list)\b",
             q_lower,
         ):
             return False
@@ -648,7 +648,7 @@ No bullet points. No emojis."""
         if len(question.strip()) < 3:
             return question
 
-        recent_history = self._conversation_history[-6:]
+        recent_history = self._conversation_history[-10:]
         history_text = "\n".join(
             [f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content'][:200]}" for msg in recent_history]
         )
@@ -825,21 +825,28 @@ No bullet points. No emojis."""
                             print(f"[DEBUG] Retry error: {e}")
 
             # Follow-up fallback to recent context — only if it's actually a follow-up
-            if self._is_simple_followup(search_question) and self.recent_context and not context:
-                context = self.recent_context
-                if self.debug:
-                    print("[DEBUG] Using recent_context for follow-up")
-            elif not self._is_simple_followup(search_question):
-                # New topic — clear stale context so it doesn't leak into future follow-ups
-                if context:
+            if self._is_simple_followup(search_question):
+                if not context and self.recent_context:
+                    # No fresh retrieval — fall back to last known context
+                    context = self.recent_context
+                    if self.debug:
+                        print("[DEBUG] Using recent_context for follow-up")
+                elif context:
+                    # Fresh retrieval on a follow-up — update recent_context so
+                    # subsequent follow-ups reference the new topic, not the old one.
                     self.recent_context = context
-                else:
-                    self.recent_context = ""
+            else:
+                # New topic — update or clear recent_context
+                self.recent_context = context if context else ""
 
         # Cap context size to avoid token overflow (max ~4000 chars)
         MAX_CONTEXT_CHARS = 4000
         if context and len(context) > MAX_CONTEXT_CHARS:
-            context = context[:MAX_CONTEXT_CHARS] + "\n\n[...additional results truncated for brevity]"
+            # Cut at the last newline before the limit so we don't break mid-sentence or mid-URL
+            cut = context.rfind("\n", 0, MAX_CONTEXT_CHARS)
+            if cut == -1:
+                cut = MAX_CONTEXT_CHARS
+            context = context[:cut] + "\n\n[...additional results truncated for brevity]"
 
         # Build LLM messages. _call_haiku takes the system prompt as a separate
         # parameter, so we don't prepend it to the messages list here.
@@ -848,7 +855,7 @@ No bullet points. No emojis."""
 
         # Cap conversation history to last 6 messages to control token usage
         if use_history and self._conversation_history:
-            messages.extend(self._conversation_history[-6:])
+            messages.extend(self._conversation_history[-10:])
 
         if context:
             user_msg = (
