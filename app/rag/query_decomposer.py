@@ -26,10 +26,8 @@ COMPARISON_PATTERNS = [
 ]
 
 MULTI_ENTITY_PATTERNS = [
-    # "Tell me about X, Y, and Z"
+    # "Tell me about X, Y, and Z" — only matches when there's a comma (named list)
     r'(?:tell me about|what (?:is|are)|info on|information about)\s+(.+?),\s+(.+?)(?:,?\s+and\s+(.+?))?(?:\?|$)',
-    # "X and Y courses/professors/info"
-    r'(.+?)\s+and\s+(.+?)\s+(?:courses?|professors?|faculty|info|information|details)',
 ]
 
 LIST_PATTERNS = [

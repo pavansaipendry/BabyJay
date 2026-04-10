@@ -370,6 +370,31 @@ class FacultyRetriever:
         
         return deduped[:limit]
     
+    def search_by_research_keywords(self, keywords: List[str], department_key: str = None,
+                                     limit: int = 10) -> List[Dict]:
+        """
+        Find faculty whose research_interests contain ALL of the given keywords
+        (case-insensitive substring match). Useful to supplement vector search.
+
+        Args:
+            keywords: List of keyword strings to match (e.g. ["machine", "learning"])
+            department_key: Optional dept abbreviation filter (e.g. "eecs")
+            limit: Max results
+
+        Returns:
+            List of faculty dicts that match
+        """
+        self._load_data()
+        results = []
+        for f in self._all_faculty:
+            if department_key:
+                if f.get("department_key", "") != department_key.lower():
+                    continue
+            research = " ".join(str(r) for r in (f.get("research_interests") or [])).lower()
+            if all(kw.lower() in research for kw in keywords):
+                results.append(f)
+        return results[:limit]
+
     def format_for_context(self, faculty_list: List[Dict]) -> str:
         """Format faculty list as context string for LLM."""
         if not faculty_list:

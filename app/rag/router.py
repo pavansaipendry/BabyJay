@@ -113,6 +113,14 @@ class QueryRouter:
                     sub_results.append(sr)
                 return self.decomposer.merge_sub_results(sub_results)
 
+        # Step 0b: Detect multi-domain queries (e.g. "courses AND faculty", "dining AND transit")
+        # When a single query clearly spans two domains, route each domain and merge.
+        multi_domain = self._detect_multi_domain(query)
+        if multi_domain:
+            sub_results = [self.route(sq, use_vector_fallback=use_vector_fallback)
+                           for sq in multi_domain]
+            return self.decomposer.merge_sub_results(sub_results)
+
         # Step 1: Classify the query (preprocessing is handled by chat.py before routing)
         classification = self.classifier.classify(query)
         intent = classification.get("intent", "general")
@@ -177,6 +185,76 @@ class QueryRouter:
             else:
                 return self._empty_result(classification)
     
+    # Pairs of (domain_a_keywords, domain_b_keywords, sub-query-a-hint, sub-query-b-hint)
+    _MULTI_DOMAIN_PAIRS = [
+        # Course + Faculty
+        (r"\b(course|courses|class|classes|prerequisite|prereq|EECS\s*\d{3})\b",
+         r"\b(professor|faculty|researcher|who teaches|email.*professor|professor.*email)\b",
+         "What courses are related to {topic}?",
+         "Which faculty work on {topic}?"),
+        # Tuition + Housing
+        (r"\b(tuition|cost|per credit|credit hour cost)\b",
+         r"\b(housing|residence hall|dorm|dormitory|on.campus living)\b",
+         "What is the tuition rate?",
+         "What housing options are available?"),
+        # Dining + Transit
+        (r"\b(dining|eat|food|cafeteria|meal|restaurant)\b",
+         r"\b(bus|transit|route|transportation|shuttle|get to campus|ride)\b",
+         "Where can I eat on campus?",
+         "What transit routes serve campus?"),
+        # Calendar + Course
+        (r"\b(when does|semester start|semester begin|spring|fall|calendar)\b",
+         r"\b(course|courses|class|classes|EECS\s*\d{3})\b",
+         "When does the semester start?",
+         "What courses are available?"),
+        # Calendar + Tuition (drop deadline + refund)
+        (r"\b(drop|withdraw|withdrawal|last day to drop|deadline)\b",
+         r"\b(refund|tuition|financial|payment)\b",
+         "What are the drop/withdrawal deadlines?",
+         "What is the tuition refund policy?"),
+        # Faculty + Housing
+        (r"\b(professor|faculty|researcher|email.*professor|professor.*email)\b",
+         r"\b(housing|residence hall|dorm|dormitory|on.campus living|graduate housing)\b",
+         "Who are the faculty?",
+         "What housing is available?"),
+    ]
+
+    def _detect_multi_domain(self, query: str) -> Optional[List[str]]:
+        """
+        Detect if a query clearly spans two distinct domains and can be split.
+        Returns [sub_query_a, sub_query_b] if split is viable, else None.
+
+        Strategy: split on ", and" or "; and" or " and " (when between two
+        distinct domain signals). Each half must be ≥10 chars to be useful.
+        """
+        import re
+
+        # Split candidates: ", and", "; and", " and " at a clause boundary
+        split_patterns = [
+            r',\s+and\s+',       # "..., and ..."
+            r';\s+(?:and\s+)?',  # "...; ..." or "...; and ..."
+        ]
+
+        for sp in split_patterns:
+            parts = re.split(sp, query, maxsplit=1, flags=re.IGNORECASE)
+            if len(parts) == 2:
+                a, b = parts[0].strip(), parts[1].strip()
+                if len(a) >= 10 and len(b) >= 10:
+                    # Check that a and b hit different domain patterns
+                    a_domains = {i for i, (pa, pb, _, _) in enumerate(self._MULTI_DOMAIN_PAIRS)
+                                 if re.search(pa, a, re.IGNORECASE)}
+                    b_domains = {i for i, (pa, pb, _, _) in enumerate(self._MULTI_DOMAIN_PAIRS)
+                                 if re.search(pb, b, re.IGNORECASE)}
+                    if a_domains & b_domains:  # At least one pair matched
+                        # Ensure b is a complete question
+                        if not b[0].isupper():
+                            b = b[0].upper() + b[1:]
+                        if not b.endswith('?'):
+                            b = b + '?'
+                        return [a, b]
+
+        return None
+
     def _route_offices(self, query: str, classification: Dict) -> Dict[str, Any]:
         """Direct JSON lookup against offices.json — no ChromaDB needed."""
         import json
@@ -328,7 +406,9 @@ class QueryRouter:
 
         results = []
         source = "faculty_searcher"
-        top_k = 100 if scope == "complete_list" else 10
+        # For complete lists use 100; for research-area semantic queries use 30
+        # (EECS has 67 faculty, scores cluster tightly — need wide net)
+        top_k = 100 if scope == "complete_list" else 30
 
         # ── Strategy 1: Exact / partial name lookup ───────────────────────
         if name and not department and not research_area:
@@ -346,10 +426,43 @@ class QueryRouter:
         else:
             # Build the query term for the vector search
             search_q = research_area or query
-            dept_filter = department  # FacultySearcher accepts partial dept name
+            # Expand department abbreviations to partial names that match ChromaDB metadata
+            _DEPT_MAP = {
+                "eecs": "Electrical Engineering",
+                "cs": "Computer Science",
+                "math": "Mathematics",
+                "physics": "Physics",
+                "bio": "Biology",
+                "chem": "Chemistry",
+            }
+            dept_filter = _DEPT_MAP.get((department or "").lower(), department)
             results_raw = self.faculty_searcher.search(
                 search_q, top_k=top_k, department_filter=dept_filter
             )
+            # Supplement with JSON keyword match on research_interests so that
+            # faculty whose embedding rank is low but clearly match the topic
+            # are always included (e.g. Branicky for "machine learning").
+            if research_area or (department and not name):
+                kw = (research_area or search_q).lower()
+                kw_terms = [t.strip() for t in kw.replace("/", " ").split() if len(t) > 2]
+                json_matches = self.faculty_retriever.search_by_research_keywords(
+                    kw_terms, department_key=department, limit=10
+                )
+                # Merge — add JSON matches not already in results_raw
+                seen_names = {r.get("name", "").lower() for r in results_raw}
+                for jm in json_matches:
+                    if jm.get("name", "").lower() not in seen_names:
+                        results_raw.append({
+                            "name": jm.get("name", ""),
+                            "department": jm.get("department", ""),
+                            "email": jm.get("email", ""),
+                            "phone": jm.get("phone", ""),
+                            "office": jm.get("office", ""),
+                            "building": jm.get("building", ""),
+                            "profile_url": jm.get("profile_url", ""),
+                            "score": 0.5,
+                            "document": " ".join(str(r) for r in jm.get("research_interests", [])),
+                        })
             # Normalise FacultySearcher dicts to the format format_for_context expects
             results = [
                 {

@@ -70,8 +70,10 @@ class FacultySearcher:
         Returns:
             List of matching faculty with scores
         """
-        # If department filter specified, get more results and filter after
-        fetch_k = top_k * 10 if department_filter else top_k
+        # If department filter specified, fetch a large candidate pool so that
+        # all department members can be scored before filtering.
+        # EECS has ~67 faculty, so fetching 400 guarantees they're all candidates.
+        fetch_k = min(400, top_k * 20) if department_filter else top_k
         
         # Query ChromaDB
         results = self.collection.query(

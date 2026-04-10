@@ -122,8 +122,10 @@ class QueryClassifier:
             "eecs_research_info": [
                 r"\b(ittc|i2s|cresis)\b",
                 r"\b(research\s+cluster|research\s+group|research\s+area|research\s+center|research\s+facilit)",
-                r"\beecs\b.*\bresearch\b",
-                r"\bresearch\b.*\beecs\b",
+                # Only match EECS+research when asking about the department's research program,
+                # NOT when asking about individual faculty (which is faculty_search)
+                r"\beecs\b.*\bresearch\b(?!.*\b(professor|faculty|who|which person|member)\b)",
+                r"\bresearch\b.*\beecs\b(?!.*\b(professor|faculty|who|which person|member)\b)",
                 # Cluster name mentions — include "cybersecurity" so standalone
                 # "cybersecurity research at KU" routes here.
                 r"\b(applied\s+electromagnetics|communication\s+systems|computational\s+science|computer\s+systems\s+design|computing\s+in\s+the\s+biosciences|cybersecurity|language\s+and\s+semantics|radar\s+systems|remote\s+sensing|rf\s+systems|signal\s+processing|theory\s+of\s+computing)\b.*\bresearch\b",
@@ -196,6 +198,13 @@ class QueryClassifier:
                 # "tell me about [Name] in EECS / as a professor" and "who is [Name] in EECS"
                 r"\b(tell me about|who is|who's|about)\b.+\b(eecs|professor|prof|faculty|department|dept|researcher|phd)\b",
                 r"\b(eecs|professor|prof|faculty|phd)\b.+\b(tell me about|who is|who's)\b",
+                # Person name + contact/office/research — e.g. "What is Arvin Agah's email?"
+                # Matches "PossibleName's email/phone/office/research/website"
+                r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+['']s\s+(email|phone|office|research|website|contact|profile)",
+                # "email for [Name]" / "email of [Name]"
+                r"\b(email|phone|office|contact)\s+(for|of)\s+[A-Z][a-z]",
+                # "what does [Name] research / study / work on"
+                r"what\s+does\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+(research|study|work|do|teach)",
             ],
             "course_info": [
                 # Course code patterns (EECS 168, AE 345, etc.)
@@ -312,7 +321,10 @@ class QueryClassifier:
         r"\b(professor|professors|prof|profs|faculty|researcher|researchers|"
         r"instructor|instructors|teacher|teachers|advisor|advisors|dean|deans|"
         r"who\s+teaches|who\s+does\s+research|expert\s+in|specialist\s+in|dr\.?|"
-        r"eecs|phd|ph\.d)\b",
+        r"eecs|phd|ph\.d)\b"
+        # Person-name + contact style: "Arvin Agah's email", "email for John Smith"
+        r"|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+['']s\s+(?:email|phone|office|research|contact)"
+        r"|\b(?:email|phone|office|contact)\s+(?:for|of)\s+[A-Z][a-z]",
         re.IGNORECASE,
     )
 
@@ -325,6 +337,22 @@ class QueryClassifier:
 
         # Hard overrides — these semantics are unambiguous enough to skip
         # the scoring contest entirely.
+
+        # "which/who EECS faculty/professor works on / researches X" → faculty_search
+        # This must come before eecs_research_info to avoid misrouting.
+        if re.search(
+            r"\b(which|who|find|list)\b.{0,40}\b(eecs|department)\b.{0,60}\b(faculty|professor|professors|researcher|researchers|member)\b",
+            query_lower,
+        ) or re.search(
+            r"\b(which|who)\b.{0,30}\b(faculty|professor|professors|researcher|researchers)\b.{0,60}\b(research|work|study|focus|speciali)",
+            query_lower,
+        ) or re.search(
+            # "EECS professors/faculty working on X" — plural + working/focusing
+            r"\b(eecs)\b.{0,20}\b(professors|faculty|researchers)\b.{0,60}\b(working on|focusing on|specializ|research in|studying)",
+            query_lower,
+        ):
+            return ("faculty_search", 0.9)
+
         if re.search(r"\btutoring\b", query_lower) and re.search(
             r"\b(eecs|cs|course|class|\d{3,4})\b", query_lower
         ):

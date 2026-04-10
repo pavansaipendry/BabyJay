@@ -263,10 +263,14 @@ class ContextBuilder:
         def pick(key):
             return r.get(key) or md.get(key)
 
+        # If there's a content field with structured text, use it — it already
+        # has hours, description, etc. baked in from ingestion.
+        content = r.get("content", "")
+        if content and pick("name"):
+            return f"[Source: {source}]\n{content[:500]}"
+
         name = pick("name")
-        # Vector result — fall back to raw content
         if not name:
-            content = r.get("content", "")
             if content:
                 return f"[Source: {source}]\n{content[:400]}"
             return ""
@@ -277,11 +281,11 @@ class ContextBuilder:
             lines.append(f"Building: {pick('building')}")
         if pick("type"):
             lines.append(f"Type: {pick('type')}")
-        if "hours" in fields and pick("hours"):
+        if pick("hours"):
             hours = pick("hours")
             if isinstance(hours, dict):
                 hours_parts = [f"{k}: {v}" for k, v in hours.items() if v]
-                lines.append(f"Hours: {'; '.join(hours_parts[:3])}")
+                lines.append(f"Hours: {'; '.join(hours_parts)}")
             else:
                 lines.append(f"Hours: {hours}")
         lines.append("Source URL: https://dining.ku.edu")
@@ -293,9 +297,13 @@ class ContextBuilder:
         def pick(key):
             return r.get(key) or md.get(key)
 
+        # Use pre-formatted content — it already contains operating days.
+        content = r.get("content", "")
         route_name = pick("route_name") or pick("name")
+        if content and route_name:
+            return f"[Source: {source}]\n{content[:500]}"
+
         if not route_name:
-            content = r.get("content", "")
             if content:
                 return f"[Source: {source}]\n{content[:400]}"
             return ""
@@ -304,6 +312,13 @@ class ContextBuilder:
         lines.append(f"Route: {route_name}")
         if pick("route_number"):
             lines.append(f"Number: {pick('route_number')}")
+        if pick("operates"):
+            lines.append(f"Operates: {pick('operates')}")
+        elif pick("operates_days"):
+            od = pick("operates_days")
+            if isinstance(od, dict):
+                active = [day.title() for day, runs in od.items() if runs]
+                lines.append(f"Operates: {', '.join(active)}")
         if pick("description"):
             lines.append(f"Info: {str(pick('description'))[:150]}")
         lines.append("Source URL: https://lawrenceks.org/transit/")
@@ -315,9 +330,13 @@ class ContextBuilder:
         def pick(key):
             return r.get(key) or md.get(key)
 
+        # Use pre-formatted content when available — it includes bath, room types, rates.
+        content = r.get("content", "")
+        if content and pick("name"):
+            return f"[Source: {source}]\n{content[:600]}"
+
         name = pick("name")
         if not name:
-            content = r.get("content", "")
             if content:
                 return f"[Source: {source}]\n{content[:400]}"
             return ""
@@ -326,6 +345,14 @@ class ContextBuilder:
         lines.append(f"Name: {name}")
         if pick("type"):
             lines.append(f"Type: {pick('type')}")
+        if pick("bath"):
+            lines.append(f"Bath: {pick('bath')}")
+        if pick("room_types"):
+            rt = pick("room_types")
+            if isinstance(rt, list):
+                lines.append(f"Room types: {', '.join(rt)}")
+            else:
+                lines.append(f"Room types: {rt}")
         if pick("description"):
             lines.append(f"Info: {str(pick('description'))[:200]}")
         lines.append("Source URL: https://housing.ku.edu")
