@@ -347,6 +347,12 @@ No bullet points. No emojis."""
             "housing", "building", "department", "degree", "major", "minor",
             "semester", "finals", "midterm", "gpa", "registrar", "advising",
             "babyjay", "baby jay", "parking", "student", "undergraduate", "graduate",
+            # Academic fields students commonly name as their major
+            "computer", "science", "engineering", "business", "economics",
+            "biology", "chemistry", "physics", "mathematics", "psychology",
+            "information", "architecture", "journalism", "education", "nursing",
+            "accounting", "finance", "management", "marketing", "philosophy",
+            "sociology", "history", "english", "music", "art", "theater",
         ]
         if any(kw in q for kw in ku_keywords):
             return False
@@ -358,7 +364,7 @@ No bullet points. No emojis."""
             r"\b(movie|film|actor|actress|netflix|spotify|song|album|singer)\b",
             r"\b(stock|bitcoin|crypto|invest|trading)\b",
             r"\b(write me|write a|generate a|create a)\s+(poem|story|essay|song|code|script|email)\b",
-            r"^(solve|calculate|compute|what is \d)",
+            r"^(solve|calculate|compute\b|what is \d)",
             r"\b(translate|translation)\b",
             r"\b(nba|nfl|mlb|fifa|world cup|super bowl|olympics)\b",
             r"\b(diet|weight loss|workout plan|medical advice|symptom|diagnos)\b",
@@ -705,9 +711,18 @@ No bullet points. No emojis."""
 
         question = question.strip()
 
-        # Follow-ups with conversation history skip greeting/about/off-topic checks entirely
-        # "his number?" should NOT be caught by greeting detector just because it starts with "hi"
-        _is_followup = self._conversation_history and self._is_simple_followup(question)
+        # Follow-ups with conversation history skip greeting/about/off-topic checks entirely.
+        # "his number?" should NOT be caught by greeting detector just because it starts with "hi".
+        # Also treat as follow-up if the bot's last message ended with "?" — the user is
+        # answering a question the bot asked (e.g. "What's your major?" → "Computer Science").
+        _bot_asked_question = (
+            self._conversation_history
+            and self._conversation_history[-1].get("role") == "assistant"
+            and self._conversation_history[-1].get("content", "").rstrip().endswith("?")
+        )
+        _is_followup = self._conversation_history and (
+            self._is_simple_followup(question) or _bot_asked_question
+        )
 
         if not _is_followup:
             # Greeting
