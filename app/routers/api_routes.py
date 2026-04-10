@@ -109,15 +109,12 @@ async def chat(
                     "content": msg["content"]
                 })
 
-        # Get response — use_history=False because we manage history ourselves
-        # This prevents chat.ask() from double-saving messages to its internal store
-        response = chat_instance.ask(request.message, use_history=False)
+        # Get response with full history — the instance already has history loaded
+        # from DB above, so use_history=True passes it to the LLM correctly.
+        # ask() appends messages internally; we also save to DB as source of truth.
+        response = chat_instance.ask(request.message, use_history=True)
 
-        # Manually update the instance's history so follow-ups work
-        chat_instance._conversation_history.append({"role": "user", "content": request.message})
-        chat_instance._conversation_history.append({"role": "assistant", "content": response})
-
-        # Save to database (single source of truth)
+        # Save to database (source of truth for cross-worker persistence)
         db.add_message(conversation_id, "user", request.message)
         db.add_message(conversation_id, "assistant", response)
 

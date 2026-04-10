@@ -891,7 +891,11 @@ No bullet points. No emojis."""
             )
         else:
             user_msg = (
-                f"[No specific KU database results found for this question]\n\n"
+                f"[No KU database results were found for this question. "
+                f"Do NOT invent or recall professor names, emails, office locations, "
+                f"course codes, phone numbers, or any specific KU details. "
+                f"If you cannot answer from the conversation history above, "
+                f"tell the student honestly and point them to ku.edu or the relevant KU office.]\n\n"
                 f"{question}"
             )
 
