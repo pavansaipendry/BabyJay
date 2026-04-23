@@ -24,6 +24,10 @@ requests==2.32.0
 
 # Utils
 pydantic==2.7.0
+# chromadb 0.4.24 uses np.float_ which NumPy 2.0 removed. Pin numpy<2 until
+# we upgrade chromadb — otherwise Render rebuilds pull NumPy 2.x and crash
+# on import chromadb → `np.float_` AttributeError.
+numpy<2.0
 chromadb==0.4.24
 rapidfuzz
 beautifulsoup4==4.12.3
