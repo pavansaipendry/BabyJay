@@ -223,10 +223,16 @@ class QueryClassifier:
                 r"\b(calculus|physics|chemistry|biology|engineering)\s+(course|courses|class|classes|major|department|prereq)",
                 # Level + course indicators
                 r"\b(undergraduate|graduate|grad|undergrad)\s+(course|courses|class|classes|level)\b",
-                # Question patterns
-                r"\bwhat.*(course|class|prerequisite|prereq)\b",
-                r"\b(take|taking|need to take)\b.*\b(course|class)\b",
+                # Question patterns. `courses?`/`classes?` so trailing-`\b` still
+                # matches the plural ("what courses" was missed before because
+                # `\b` fails between the `e` and `s` of "courses").
+                r"\bwhat.*(courses?|classes?|prerequisites?|prereqs?)\b",
+                r"\b(take|taking|need to take)\b.*\b(courses?|classes?)\b",
                 r"\bprereq.*for\b",
+                # Explicit course-recommendation ask — "recommend courses",
+                # "suggest classes", etc. Raises course_info so it wins against
+                # eecs_grad_admissions_info when "graduate" and "courses" co-occur.
+                r"\b(recommend|suggest|take|enroll\s+in)\b.*\b(courses?|classes?)\b",
             ],
             "dining_info": [
                 r"\b(eat|food|dining|restaurant|hungry|lunch|dinner|breakfast|coffee|cafe|cafeteria|meal)\b",

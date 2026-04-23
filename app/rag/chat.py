@@ -692,13 +692,17 @@ No bullet points. No emojis."""
 
         # Follow-ups with conversation history skip greeting/about/off-topic checks entirely.
         # "his number?" should NOT be caught by greeting detector just because it starts with "hi".
-        # Also treat as follow-up if the bot's last message ended with "?" — the user is
-        # answering a question the bot asked (e.g. "What's your major?" → "Computer Science").
-        _bot_asked_question = (
-            self._conversation_history
+        # Also treat as follow-up if the bot's last message *contained* a question — the user
+        # is probably answering it (e.g. bot lists clarifying bullets then closes with "!",
+        # user's next turn is the answer). Checking only the final char missed cases where
+        # the bot's closing sentence was a friendly "!" even though earlier sentences were "?".
+        _last_assistant = (
+            self._conversation_history[-1].get("content", "")
+            if self._conversation_history
             and self._conversation_history[-1].get("role") == "assistant"
-            and self._conversation_history[-1].get("content", "").rstrip().endswith("?")
+            else ""
         )
+        _bot_asked_question = bool(_last_assistant) and "?" in _last_assistant
         _is_followup = self._conversation_history and (
             self._is_simple_followup(question) or _bot_asked_question
         )
@@ -789,8 +793,17 @@ No bullet points. No emojis."""
         else:
             search_query = search_question
 
-            # Follow-up expansion
-            if self._is_simple_followup(search_question) and use_history:
+            # Follow-up expansion. Triggers on:
+            #   (a) short / pronoun-y follow-ups ("his office?", "what about that?")
+            #   (b) answers to a clarifying question the bot itself just asked —
+            #       those can be long declarative sentences that don't look like
+            #       follow-ups but still need prior-turn intent merged in
+            #       (e.g. bot asked "undergrad or grad?" → user says "grad, AI/ML"
+            #        → we must expand with the original "EECS courses" intent).
+            needs_expansion = use_history and (
+                self._is_simple_followup(search_question) or _bot_asked_question
+            )
+            if needs_expansion:
                 try:
                     expanded = self._expand_followup_question(search_question)
                     if expanded != search_question:
@@ -840,11 +853,13 @@ No bullet points. No emojis."""
                         if self.debug:
                             print(f"[DEBUG] Retry error: {e}")
 
-            # Follow-up fallback to recent context — only if it's actually a follow-up
+            # Follow-up fallback to recent context — only if it's actually a follow-up.
+            # Also treat an answer-to-bot-question as a follow-up so recent_context
+            # from the pre-clarification turn isn't wiped on the answer turn.
             _is_pronoun_followup = bool(
                 self._conversation_history and self._PRONOUN_RE.search(search_question)
             )
-            if self._is_simple_followup(search_question):
+            if self._is_simple_followup(search_question) or _bot_asked_question:
                 if not context and self.recent_context:
                     # No fresh retrieval — fall back to last known context
                     context = self.recent_context
