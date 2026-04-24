@@ -24,10 +24,13 @@ requests==2.32.0
 
 # Utils
 pydantic==2.7.0
-# chromadb 0.4.24 uses np.float_ which NumPy 2.0 removed. Pin numpy<2 until
-# we upgrade chromadb — otherwise Render rebuilds pull NumPy 2.x and crash
-# on import chromadb → `np.float_` AttributeError.
+# chromadb 1.3.5 matches the on-disk schema at data/vectordb/chroma.sqlite3 —
+# 0.4.24 queries `collections.topic` which was dropped in chromadb 0.5, so
+# reading the current DB with 0.4.24 crashes with
+#   sqlite3.OperationalError: no such column: collections.topic.
+# Keep numpy<2 — chromadb 1.x works with numpy 2, but pinning matches the
+# local env that created the DB and avoids surprise float-type changes.
 numpy<2.0
-chromadb==0.4.24
+chromadb==1.3.5
 rapidfuzz
 beautifulsoup4==4.12.3
